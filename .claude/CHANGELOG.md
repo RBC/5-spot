@@ -9,6 +9,196 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-10 08:50] - Extend Cosign image signing to main-branch pushes
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`: Changed Cosign signing step condition from `github.event_name == 'release'` to `github.event_name != 'pull_request'`
+
+### Why
+Main-branch images are tagged `latest` and `main-YYYY-MM-DD` and may be deployed to staging. Signing them allows `cosign verify` to work on staging images, not just production releases. PR images remain unsigned — they are ephemeral, tagged `pr-{number}`, and not deployed anywhere.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-04-10 08:45] - Fix attest job: add GHCR login before push-to-registry
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`: Added `docker/login-action@v3` step to the `attest` job before `actions/attest-build-provenance@v2`
+
+### Why
+`push-to-registry: true` in `actions/attest-build-provenance` pushes the attestation bundle as an OCI artifact to GHCR, which requires registry credentials. Each job runs in a fresh environment — the Docker login performed by `firestoned/github-actions/docker/setup-docker` in the `docker` job does not carry over to the `attest` job.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-04-10 08:30] - Consolidate pr.yaml, main.yaml, release.yaml into single build.yaml
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`: New consolidated workflow replacing the three separate files; triggers on `pull_request`, `push` to main, and `release: published`; uses `if:` at job and step level to gate event-specific behaviour
+- `.github/workflows/pr.yaml`: Deleted
+- `.github/workflows/main.yaml`: Deleted
+- `.github/workflows/release.yaml`: Deleted
+
+### Why
+Three workflows shared the same build matrix, env vars, and most job logic, requiring the same fix to be applied in three places (e.g. the linker override, the attest job). A single file is easier to maintain and gives a complete picture of CI behaviour in one place.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+> **Key design decisions:**
+> - `extract-version` serves as the quality gate: it runs after all checks that apply to the current event (`verify-commits`, `license-check`, `format`) and all downstream jobs depend on it.
+> - Docker metadata uses three separate `docker/metadata-action` steps gated by `if:`; `docker/build-push-action` concatenates all outputs and filters empty lines.
+> - Cosign signing, Docker SBOM generation, `sign-artifacts`, SLSA provenance, and `upload-release-assets` are guarded by `if: github.event_name == 'release'`.
+> - `test` and `format`/`clippy` are guarded by `if: github.event_name == 'pull_request'`.
+> - `trivy` is guarded by `if: github.event_name != 'pull_request'`.
+> - Artifact retention: PR/push = 1 day (two upload steps); release = default.
+
+---
+
+## [2026-04-10 07:45] - Add GitHub artifact attestation job to all three CI/CD workflows
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/pr.yaml`: Added `id: docker_build` to docker build step; added `outputs:` block to docker job (per-variant digests); added `export-digest` step; added `attest` job depending on `docker` and `extract-version`
+- `.github/workflows/main.yaml`: Same additions to docker job and new `attest` job
+- `.github/workflows/release.yaml`: Same additions to `docker-release` job and new `attest` job (depends on `docker-release`)
+
+### Why
+GitHub's `actions/attest-build-provenance` generates a signed SLSA provenance attestation stored natively in GitHub Artifact Attestations and optionally pushed to the OCI registry alongside the image. This is queryable with `gh attestation verify` and complements the existing Cosign signatures in the release workflow. Requires the matrix digest-export pattern to pass per-image digests from a matrix job to a downstream job.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-04-08 17:30] - Add documentation build and GitHub Pages deployment workflow
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/docs.yaml`: New workflow — builds MkDocs documentation (including `make docs` which runs `cargo run --bin crddoc`) and deploys to GitHub Pages on push to main; runs link checks on PRs
+
+### Why
+The project has a full MkDocs documentation site under `docs/` but no automated build or publishing pipeline. This workflow closes that gap by building on every relevant change, checking for broken links on PRs, and publishing to GitHub Pages on every merge to main.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+> **Note:** GitHub Pages must be enabled in the repository settings (`Settings → Pages → Source: GitHub Actions`) for the deploy job to succeed. The `poetry.lock` file should be committed after the first `poetry install` run to improve cache efficiency and build reproducibility.
+
+---
+
+## [2026-04-09 11:00] - Fix CI linker error caused by .cargo/config.toml on Linux runners
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/pr.yaml`: Added `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc` and `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: cc` to the top-level `env:` block
+- `.github/workflows/main.yaml`: Same
+- `.github/workflows/release.yaml`: Same
+
+### Why
+`.cargo/config.toml` specifies `linker = "x86_64-unknown-linux-gnu-gcc"` and `linker = "aarch64-unknown-linux-gnu-gcc"` for the respective targets — Homebrew cross-compilers needed when a macOS developer uses `cargo build --target <linux-triple>` locally (the Makefile fallback path). On Linux CI runners, `cargo build --release` with no explicit target resolves to the **native** triple (e.g., `x86_64-unknown-linux-gnu` on `ubuntu-latest`), which picks up the same override and fails because the cross-compiler is not installed on GitHub Actions runners. `CARGO_TARGET_*_LINKER` environment variables take precedence over `config.toml`, restoring `cc` (the system linker) in CI without modifying the config file.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-04-09 10:00] - Replace cross-compilation with native cargo builds in CI
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/pr.yaml`: Replaced `firestoned/github-actions/rust/setup-rust-build@v1.3.6` + `build-binary@v1.3.6` + `generate-sbom@v1.3.6` with `dtolnay/rust-toolchain@stable` + `cargo build --release` + `cargo-cyclonedx`; switched ARM64 build to `ubuntu-24.04-arm` native runner; updated artifact paths from `target/$target/release/` to `target/release/`; fixed `license-id: "MIT"` → `"Apache-2.0"`
+- `.github/workflows/main.yaml`: Same build and license-check changes
+- `.github/workflows/release.yaml`: Same build and license-check changes; replaced `setup-rust-build` in `package-deploy-manifests` job with `dtolnay/rust-toolchain@stable`
+
+### Why
+The `firestoned/github-actions/rust/build-binary@v1.3.6` action internally sets `-C linker=x86_64-unknown-linux-gnu-gcc`, which is not installed on GitHub Actions `ubuntu-latest` runners, causing all build jobs to fail. Native `cargo build --release` on arch-appropriate runners eliminates cross-compilation entirely. License-id was stale after the FINOS Apache-2.0 migration.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-04-09 03:00] - Phase 2 (P2-4): leader election via kube-lease-manager
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: Added `kube-lease-manager = "0.11"` dependency
+- `src/constants.rs`: Added `DEFAULT_LEASE_NAME`, `DEFAULT_LEASE_DURATION_SECS`, `DEFAULT_LEASE_RENEW_DEADLINE_SECS`, `DEFAULT_LEASE_RETRY_PERIOD_SECS`, `DEFAULT_LEASE_GRACE_SECS`, `DEFAULT_LEASE_NAMESPACE` constants
+- `src/reconcilers/scheduled_machine.rs`: Added `is_leader: Arc<AtomicBool>` to `Context` (defaults to `true` for backward-compatible single-instance mode); added leader guard in `reconcile_guarded` — non-leaders return `Action::await_change()` immediately
+- `src/main.rs`: Added `enable_leader_election`, `lease_name`, `lease_namespace`, `lease_duration_secs`, `lease_renew_deadline_secs` CLI args; when enabled, sets `is_leader = false` at startup and spawns a background `kube-lease-manager` task that flips `is_leader` on acquisition/loss
+- `deploy/deployment/deployment.yaml`: Fixed `POD_NAME` → `CONTROLLER_POD_NAME` env var (aligns with `Context::new` and leader election holder identity)
+- `src/reconcilers/scheduled_machine_tests.rs`: Added 2 TDD tests — `test_context_new_defaults_is_leader_to_true` and `test_reconcile_guarded_awaits_change_when_not_leader`
+- `docs/src/operations/configuration.md`: Added all leader election env vars, CLI args, Leader Election section, Lease RBAC rules
+
+### Why
+Basel III HA (P2-4): a single-replica controller is a single point of failure. With `ENABLE_LEADER_ELECTION=true` and `replicas: 2`, only the lease holder reconciles resources. Standby replicas react within one `LEASE_DURATION_SECONDS` window on leader failure. `Context::is_leader` defaults to `true` so existing single-replica deployments continue without any config change.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — set `ENABLE_LEADER_ELECTION=true` and `replicas: 2`; RBAC for `leases` already in `clusterrole.yaml`
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-04-09 02:00] - Add SPDX license headers to all .github YAML files
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/ISSUE_TEMPLATE/bug_report.yml`: Added `# Copyright (c) 2025 Erick Bourgeois, finos` + `# SPDX-License-Identifier: Apache-2.0` header
+- `.github/ISSUE_TEMPLATE/feature_request.yml`: Same
+- `.github/ISSUE_TEMPLATE/meeting_minutes.yml`: Same
+- `.github/ISSUE_TEMPLATE/support_question.yml`: Same
+
+### Why
+Supply-chain provenance and automated license scanning (NIST SA-4) require SPDX headers on all project-owned files. The three workflow files and both composite actions already had headers from P2-10; these four issue templates were the remaining `.github/` YAML files without them. `dco.yml` was intentionally left untouched — it is managed by FINOS and carries an explicit "Do not edit" notice.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-04-09 01:00] - Phase 2 (P2-5): exponential back-off in error policy
 
 **Author:** Erick Bourgeois
@@ -86,7 +276,7 @@ The `ValidatingAdmissionPolicy` deployed in the previous entry had no user-facin
 - `src/**/*.rs` (all 18 files): Added P2-10 SPDX supply-chain provenance headers to every Rust source file:
   ```
   // Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
-  // SPDX-License-Identifier: MIT
+  // SPDX-License-Identifier: Apache-2.0
   ```
 
 ### Why

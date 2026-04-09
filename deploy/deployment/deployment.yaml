@@ -42,7 +42,10 @@ spec:
               value: "debug"
             - name: RUST_LOG_FORMAT
               value: "json"
-            - name: POD_NAME
+            # CONTROLLER_POD_NAME is used by the event reporter and as the
+            # leader election holder identity.  Must match what the code reads
+            # via std::env::var("CONTROLLER_POD_NAME").
+            - name: CONTROLLER_POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name

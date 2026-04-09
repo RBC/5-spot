@@ -1,7 +1,8 @@
 # Introduction
 
-[![Main Branch CI/CD](https://github.com/finos/5-spot/actions/workflows/main.yaml/badge.svg)](https://github.com/finos/5-spot/actions/workflows/main.yaml)
-[![PR CI](https://github.com/finos/5-spot/actions/workflows/pr.yaml/badge.svg)](https://github.com/finos/5-spot/actions/workflows/pr.yaml)
+[![Build (PR)](https://github.com/finos/5-spot/actions/workflows/build.yaml/badge.svg?event=pull_request)](https://github.com/finos/5-spot/actions/workflows/build.yaml)
+[![Build (push)](https://github.com/finos/5-spot/actions/workflows/build.yaml/badge.svg?event=push)](https://github.com/finos/5-spot/actions/workflows/build.yaml)
+[![Build (release)](https://github.com/finos/5-spot/actions/workflows/build.yaml/badge.svg?event=release)](https://github.com/finos/5-spot/actions/workflows/build.yaml)
 
 **5-Spot** is a cloud-native Kubernetes controller for managing time-based machine scheduling on physical nodes using Cluster API (CAPI). It enables you to automatically add and remove machines from your CAPI clusters based on time schedules, bringing cost optimization and resource efficiency to your infrastructure.
 

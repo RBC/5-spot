@@ -4,6 +4,12 @@
 
 A cloud-native Kubernetes controller for managing time-based machine scheduling on physical nodes using Cluster API (CAPI).
 
+## CI/CD
+
+[![Build (PR)](https://github.com/finos/5-spot/actions/workflows/build.yaml/badge.svg?event=pull_request)](https://github.com/finos/5-spot/actions/workflows/build.yaml)
+[![Build (push)](https://github.com/finos/5-spot/actions/workflows/build.yaml/badge.svg?event=push)](https://github.com/finos/5-spot/actions/workflows/build.yaml)
+[![Build (release)](https://github.com/finos/5-spot/actions/workflows/build.yaml/badge.svg?event=release)](https://github.com/finos/5-spot/actions/workflows/build.yaml)
+
 ## Technology & Compatibility
 
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -99,13 +105,11 @@ spec:
     apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
     kind: KubeadmConfigTemplate
     name: worker-bootstrap-config
-    namespace: default
 
   infrastructureRef:
     apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
     kind: MachineTemplate
     name: worker-machine-template
-    namespace: default
 
   clusterName: my-k0s-cluster
 

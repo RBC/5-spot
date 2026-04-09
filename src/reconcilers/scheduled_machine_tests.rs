@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 #[cfg(test)]
 #[allow(clippy::module_inception)]
 mod tests {
@@ -981,6 +981,57 @@ mod tests {
         assert_ne!(
             id1, id2,
             "Each reconciliation must produce a distinct correlation ID"
+        );
+    }
+
+    // ========================================================================
+    // Leader election — P2-4 tests (TDD)
+    // ========================================================================
+
+    use http::{Request, Response};
+    use kube::client::Body;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use tower_test::mock;
+
+    fn le_mock_client() -> kube::Client {
+        let (svc, _handle) = mock::pair::<Request<Body>, Response<Body>>();
+        kube::Client::new(svc, "default")
+    }
+
+    #[tokio::test]
+    async fn test_context_new_defaults_is_leader_to_true() {
+        // When leader election is disabled every instance acts as leader.
+        let ctx = Context::new(le_mock_client(), 0, 1);
+        assert!(
+            ctx.is_leader.load(Ordering::Acquire),
+            "Context::new must default is_leader to true (leader election disabled)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_guarded_awaits_change_when_not_leader() {
+        // Non-leader instances must skip all reconciliation work and return
+        // await_change so they remain responsive to future leadership changes.
+        // No mock responses are set up — any API call would block forever,
+        // proving the early-return path was taken if the test completes.
+        let ctx = Context::new(le_mock_client(), 0, 1);
+        ctx.is_leader.store(false, Ordering::Release);
+
+        let sm = make_sm_with_uid("deadbeef-1234-5678-9abc-deadbeef0001");
+
+        let result = super::super::reconcile_guarded(
+            Arc::new(sm),
+            Arc::new(ctx),
+            "default".to_string(),
+            "test-sm".to_string(),
+            "test-reconcile-id".to_string(),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "non-leader must return Ok without error, got: {result:?}"
         );
     }
 }

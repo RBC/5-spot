@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 # CHAINGUARD PRODUCTION DOCKERFILE - Uses pre-built binaries
 #
@@ -34,7 +34,7 @@ ARG TARGETARCH
 ARG VERSION
 ARG GIT_SHA
 
-LABEL org.opencontainers.image.source="https://github.com/RBC/5-spot" \
+LABEL org.opencontainers.image.source="https://github.com/finos/5-spot" \
       org.opencontainers.image.description="5-Spot Machine Scheduler - Kubernetes Controller for Time-Based Machine Scheduling (Chainguard - Zero CVEs)" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${VERSION}" \

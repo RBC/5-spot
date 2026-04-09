@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 //! # CRD type definitions
 //!
 //! This module is the **source of truth** for the `ScheduledMachine` custom resource.

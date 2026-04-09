@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Health check endpoints for 5-Spot controller
 //
 // Provides /healthz (liveness) and /readyz (readiness) endpoints
