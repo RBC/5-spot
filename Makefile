@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 .PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom
 

@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 //! # Global constants
 //!
 //! All named constants used across the controller.  No magic numbers are
@@ -83,6 +83,29 @@ pub const MAX_BACKOFF_SECS: u64 = 300;
 
 /// Maximum number of per-resource reconciliation retries before capping at [`MAX_BACKOFF_SECS`]
 pub const MAX_RECONCILE_RETRIES: u32 = 10;
+
+// ============================================================================
+// Leader Election Constants
+// ============================================================================
+
+/// Default Kubernetes Lease name used for leader election
+pub const DEFAULT_LEASE_NAME: &str = "5spot-leader";
+
+/// Default Lease duration in seconds — how long the lease is considered valid
+pub const DEFAULT_LEASE_DURATION_SECS: u64 = 15;
+
+/// Default renew deadline in seconds — the leader must renew before this deadline
+pub const DEFAULT_LEASE_RENEW_DEADLINE_SECS: u64 = 10;
+
+/// Default retry period in seconds — documented for ops; not a direct `kube-lease-manager` parameter
+pub const DEFAULT_LEASE_RETRY_PERIOD_SECS: u64 = 2;
+
+/// Computed default grace period (duration − renew_deadline) in seconds
+pub const DEFAULT_LEASE_GRACE_SECS: u64 =
+    DEFAULT_LEASE_DURATION_SECS - DEFAULT_LEASE_RENEW_DEADLINE_SECS;
+
+/// Default namespace for the leader election Lease resource
+pub const DEFAULT_LEASE_NAMESPACE: &str = "5spot-system";
 
 // ============================================================================
 // Condition Types

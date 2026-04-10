@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 //! # `ScheduledMachine` reconciler
 //!
 //! Implements the Kubernetes controller reconciliation loop for
@@ -19,7 +19,7 @@
 //!
 //! ## Entry points
 //! - [`reconcile_scheduled_machine`] — called by the `kube-rs` controller loop
-//! - [`error_policy`] — determines requeue interval after a reconciliation error
+//! - [`crate::reconcilers::error_policy`] — determines requeue interval after a reconciliation error
 //!
 //! ## Multi-instance distribution
 //! When `instance_count > 1`, each resource is deterministically assigned to
@@ -27,6 +27,7 @@
 //! are not assigned to a resource skip it with `Action::await_change`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -76,6 +77,17 @@ pub struct Context {
     pub instance_count: u32,
     /// Kubernetes event recorder for publishing immutable audit-trail events.
     pub recorder: Recorder,
+    /// Whether this instance currently holds the leader lease.
+    ///
+    /// Always `true` when leader election is disabled (every instance acts as
+    /// leader).  When leader election is enabled, `main.rs` sets this to `false`
+    /// at startup and the [`LeaseManager`](kube_lease_manager::LeaseManager)
+    /// background task flips it to `true` once the lease is acquired.
+    ///
+    /// `reconcile_guarded` checks this flag before doing any work; non-leaders
+    /// return `Action::await_change()` immediately so they can react quickly when
+    /// they do become the leader.
+    pub is_leader: Arc<AtomicBool>,
     /// Per-resource reconciliation error counts, keyed by `"namespace/name"`.
     ///
     /// Incremented by [`error_policy`](crate::reconcilers::error_policy) on each
@@ -103,6 +115,9 @@ impl Context {
             instance_count,
             recorder,
             retry_counts: Arc::new(Mutex::new(HashMap::new())),
+            // Default to true so existing single-instance deployments without
+            // leader election continue to work without any configuration change.
+            is_leader: Arc::new(AtomicBool::new(true)),
         }
     }
 }
@@ -114,7 +129,7 @@ impl Context {
 /// All errors that can be returned by the reconciliation path.
 ///
 /// Variants map to specific Prometheus error label values recorded via
-/// [`record_error`](crate::metrics::record_error) so each failure mode is
+/// [`record_error`] so each failure mode is
 /// individually observable.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcilerError {
@@ -238,6 +253,18 @@ async fn reconcile_guarded(
         .as_ref()
         .and_then(|s| s.phase.clone())
         .unwrap_or_else(|| PHASE_PENDING.to_string());
+
+    // Leader election guard — non-leaders do nothing and wait for a state change.
+    // This lets standby replicas react quickly the moment they acquire the lease
+    // without hammering the API server while waiting (Basel III HA / NIST SI-2).
+    if !ctx.is_leader.load(Ordering::Acquire) {
+        debug!(
+            resource = %name,
+            namespace = %namespace,
+            "Not the leader — skipping reconciliation"
+        );
+        return Ok(Action::await_change());
+    }
 
     info!(
         resource = %name,

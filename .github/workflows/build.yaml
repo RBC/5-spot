@@ -1,0 +1,759 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  release:
+    types:
+      - published
+
+# Defaults for jobs that do not declare their own permissions block.
+# Jobs with special needs (docker, attest, sign, upload) override at job level.
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Override the cross-compilation linkers set in .cargo/config.toml.
+  # config.toml specifies the Homebrew cross-compilers needed when a macOS
+  # developer runs `cargo build --target x86_64-unknown-linux-gnu` locally.
+  # On Linux CI runners the native target IS x86_64/aarch64-unknown-linux-gnu,
+  # so cargo would try to invoke those cross-compilers — which are not
+  # installed. Setting these vars to `cc` restores the default system linker.
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: cc
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PR only: determine which files changed so expensive jobs can be skipped on
+  # docs-only pull requests.
+  # ─────────────────────────────────────────────────────────────────────────────
+  changes:
+    name: 🔍 Detect Changed Files
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # License headers — on PR only runs when source files changed.
+  # ─────────────────────────────────────────────────────────────────────────────
+  license-check:
+    name: ⚖️ Verify SPDX License Headers
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: |
+      always() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.code == 'true')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check license headers
+        uses: firestoned/github-actions/security/license-check@v1.3.6
+        with:
+          copyright-holder: "Erick Bourgeois, firestoned"
+          license-id: "Apache-2.0"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Commit signatures — verify-mode differs by event type.
+  # ─────────────────────────────────────────────────────────────────────────────
+  verify-commits:
+    name: 🔐 Verify Signed Commits
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify commits (PR)
+        if: github.event_name == 'pull_request'
+        uses: firestoned/github-actions/security/verify-signed-commits@v1.3.6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          base-ref: origin/${{ github.base_ref }}
+          verify-mode: pr
+
+      - name: Verify commits (push to main)
+        if: github.event_name == 'push'
+        uses: firestoned/github-actions/security/verify-signed-commits@v1.3.6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          verify-mode: push
+
+      - name: Verify commits (release)
+        if: github.event_name == 'release'
+        uses: firestoned/github-actions/security/verify-signed-commits@v1.3.6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          verify-mode: release
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PR only: formatting + clippy.
+  # ─────────────────────────────────────────────────────────────────────────────
+  format:
+    name: 🎨 Check Formatting
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [license-check, verify-commits]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+  clippy:
+    name: 📎 Clippy
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [format]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Extract version — all events; acts as the quality gate that downstream jobs
+  # wait on. workflow-type is derived from the GitHub event name.
+  # ─────────────────────────────────────────────────────────────────────────────
+  extract-version:
+    name: 🏷️ Extract Version Information
+    runs-on: ubuntu-latest
+    needs: [license-check, verify-commits, format]
+    # Run once all checks that apply to this event have passed or been skipped.
+    if: |
+      always() &&
+      needs.verify-commits.result == 'success' &&
+      (needs.license-check.result == 'success' || needs.license-check.result == 'skipped') &&
+      (needs.format.result == 'success' || needs.format.result == 'skipped')
+    outputs:
+      version: ${{ steps.version-chainguard.outputs.version }}
+      tag_name: ${{ steps.version-chainguard.outputs.tag-name }}
+      image-tag-chainguard: ${{ steps.version-chainguard.outputs.image-tag }}
+      image-tag-distroless: ${{ steps.version-distroless.outputs.image-tag }}
+      image-repository-chainguard: ${{ steps.version-chainguard.outputs.image-repository }}
+      image-repository-distroless: ${{ steps.version-distroless.outputs.image-repository }}
+      short-sha: ${{ steps.version-chainguard.outputs.short-sha }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version for Chainguard
+        id: version-chainguard
+        uses: ./.github/actions/extract-version
+        with:
+          repository: ${{ github.repository }}
+          workflow-type: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'push' && 'main' || 'release' }}
+          pr-number: ${{ github.event.pull_request.number }}
+          release-tag: ${{ github.event.release.tag_name }}
+          image-tag-suffix: ""
+
+      - name: Extract version for Distroless
+        id: version-distroless
+        uses: ./.github/actions/extract-version
+        with:
+          repository: ${{ github.repository }}
+          workflow-type: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'push' && 'main' || 'release' }}
+          pr-number: ${{ github.event.pull_request.number }}
+          release-tag: ${{ github.event.release.tag_name }}
+          image-tag-suffix: "-distroless"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Build binary — all events.
+  # On release the Cargo.toml version is bumped to match the release tag.
+  # ─────────────────────────────────────────────────────────────────────────────
+  build:
+    name: 🦀 Build - ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.runner }}
+    needs: [extract-version]
+    if: needs.extract-version.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64
+            runner: ubuntu-latest
+            artifact_name: 5spot-linux-amd64
+            binary_name: 5spot
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            artifact_name: 5spot-linux-arm64
+            binary_name: 5spot
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update Cargo.toml version
+        if: github.event_name == 'release'
+        run: |
+          perl -i -pe 's/^version = ".*"/version = "${{ needs.extract-version.outputs.version }}"/' Cargo.toml
+          echo "Updated Cargo.toml to version ${{ needs.extract-version.outputs.version }}"
+          grep '^version = ' Cargo.toml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
+
+      - name: Build binary
+        run: cargo build --release
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked --quiet
+
+      - name: Generate SBOM
+        run: |
+          cargo cyclonedx --format json
+          find . -maxdepth 1 -name "*.cdx.json" -exec mv {} target/release/ \;
+
+      # PR and push artifacts expire after 1 day — they are not release assets.
+      - name: Upload artifacts (PR / push)
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: |
+            target/release/${{ matrix.platform.binary_name }}
+            target/release/*.cdx.json
+          retention-days: 1
+
+      # Release artifacts keep the default retention so re-runs remain possible.
+      - name: Upload artifacts (release)
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: |
+            target/release/${{ matrix.platform.binary_name }}
+            target/release/*.cdx.json
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PR only: run tests against the pre-built binary.
+  # ─────────────────────────────────────────────────────────────────────────────
+  test:
+    name: 🧪 Test
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Download x86_64 build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 5spot-linux-amd64
+          path: target/release/
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
+
+      - name: Run tests
+        run: cargo test --all --verbose
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Docker build and push — all events.
+  #
+  # Metadata tags vary by event (three separate metadata steps, only one runs
+  # per invocation; empty outputs from skipped steps are filtered out by
+  # docker/build-push-action).  On release, Cosign signing and SBOM generation
+  # steps are also enabled.
+  # ─────────────────────────────────────────────────────────────────────────────
+  docker:
+    name: 🐳 Build and Push Docker Image - ${{ matrix.variant.name }}
+    runs-on: ubuntu-latest
+    needs: [build, extract-version, test]
+    # Allow test to be skipped (push / release) but require build to succeed.
+    if: |
+      always() &&
+      needs.build.result == 'success' &&
+      needs.extract-version.result == 'success' &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      digest-chainguard: ${{ steps.export-digest.outputs.digest-chainguard }}
+      digest-distroless: ${{ steps.export-digest.outputs.digest-distroless }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            dockerfile: Dockerfile.chainguard
+            suffix: ""
+            description: "5-Spot Chainguard Zero-CVE (glibc, FIPS-ready)"
+            image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
+          - name: Distroless
+            dockerfile: Dockerfile
+            suffix: "-distroless"
+            description: "5-Spot Google Distroless (glibc)"
+            image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Prepare Docker binaries
+        uses: ./.github/actions/prepare-docker-binaries
+
+      - name: Setup Docker environment
+        uses: firestoned/github-actions/docker/setup-docker@v1.3.6
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only one of the three metadata steps below runs per job instance.
+      # docker/build-push-action concatenates all tags/labels outputs and
+      # silently drops the empty lines produced by the two skipped steps.
+      - name: Extract metadata (PR)
+        id: meta-pr
+        if: github.event_name == 'pull_request'
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ matrix.variant.image-repository }}
+          tags: |
+            type=raw,value=${{ matrix.variant.image-tag }}
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
+          flavor: |
+            latest=false
+
+      - name: Extract metadata (push to main)
+        id: meta-main
+        if: github.event_name == 'push'
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ matrix.variant.image-repository }}
+          tags: |
+            type=raw,value=${{ matrix.variant.image-tag }}
+            type=raw,value=main-{{date 'YYYY-MM-DD'}}
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
+            type=raw,value=latest
+          flavor: |
+            latest=false
+
+      - name: Extract metadata (release)
+        id: meta-release
+        if: github.event_name == 'release'
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ matrix.variant.image-repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}${{ matrix.variant.suffix }}
+          flavor: |
+            latest=false
+            prefix=v
+            suffix=${{ matrix.variant.suffix }}
+
+      - name: Build and push Docker image (${{ matrix.variant.name }})
+        id: docker_build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.variant.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.meta-pr.outputs.tags }}
+            ${{ steps.meta-main.outputs.tags }}
+            ${{ steps.meta-release.outputs.tags }}
+          labels: |
+            ${{ steps.meta-pr.outputs.labels }}
+            ${{ steps.meta-main.outputs.labels }}
+            ${{ steps.meta-release.outputs.labels }}
+            org.opencontainers.image.description=${{ matrix.variant.description }}
+          build-args: |
+            ${{ github.event_name == 'release' && format('VERSION={0}', needs.extract-version.outputs.version) || '' }}
+          cache-from: type=gha,scope=${{ matrix.variant.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant.name }}
+          sbom: true
+          provenance: true
+
+      # Push to main and release: sign the image with Cosign (keyless, Sigstore).
+      # PR images are ephemeral and not deployed, so signing them is skipped.
+      - name: Sign container image with Cosign
+        if: github.event_name != 'pull_request'
+        uses: firestoned/github-actions/security/cosign-sign@v1.3.6
+        with:
+          image-digest: ${{ steps.docker_build.outputs.digest }}
+          image-tags: ${{ matrix.variant.image-tag }}
+          registry: ghcr.io
+          repository: ${{ matrix.variant.image-repository }}
+
+      # Release only: generate a CycloneDX SBOM for the published image.
+      - name: Generate Docker SBOM for ${{ matrix.variant.name }}
+        if: github.event_name == 'release'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
+          format: cyclonedx-json
+          output-file: docker-sbom-${{ matrix.variant.name }}.json
+
+      - name: Upload Docker SBOM as artifact
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-sbom-${{ matrix.variant.name }}
+          path: docker-sbom-${{ matrix.variant.name }}.json
+
+      - name: Export image digest
+        id: export-digest
+        run: |
+          case "${{ matrix.variant.name }}" in
+            Chainguard) echo "digest-chainguard=${{ steps.docker_build.outputs.digest }}" >> "$GITHUB_OUTPUT" ;;
+            Distroless) echo "digest-distroless=${{ steps.docker_build.outputs.digest }}" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GitHub Artifact Attestation — all events.
+  # ─────────────────────────────────────────────────────────────────────────────
+  attest:
+    name: 🔏 Attest Docker Image - ${{ matrix.variant.name }}
+    runs-on: ubuntu-latest
+    needs: [docker, extract-version]
+    if: needs.docker.result == 'success'
+    permissions:
+      id-token: write
+      attestations: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
+            digest: ${{ needs.docker.outputs.digest-chainguard }}
+          - name: Distroless
+            image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
+            digest: ${{ needs.docker.outputs.digest-distroless }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest ${{ matrix.variant.name }} image provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ matrix.variant.image-repository }}
+          subject-digest: ${{ matrix.variant.digest }}
+          push-to-registry: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Security scan — all events.
+  # Gitleaks secret scan only runs on PRs; release uploads the audit report.
+  # ─────────────────────────────────────────────────────────────────────────────
+  security:
+    name: 🛡️ Security Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: [changes, license-check, verify-commits]
+    if: |
+      always() &&
+      needs.verify-commits.result == 'success' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.code == 'true')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run security scan (PR / push)
+        if: github.event_name != 'release'
+        uses: firestoned/github-actions/rust/security-scan@v1.3.6
+        with:
+          cargo-audit-version: "0.22.0"
+
+      - name: Run security scan (release)
+        if: github.event_name == 'release'
+        uses: firestoned/github-actions/rust/security-scan@v1.3.6
+        with:
+          cargo-audit-version: "0.22.0"
+          upload-artifact-name: cargo-audit-report-release
+
+      - name: Run gitleaks (secret scanning)
+        if: github.event_name == 'pull_request'
+        run: make gitleaks
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Container security scan — push and release only (not PRs).
+  # ─────────────────────────────────────────────────────────────────────────────
+  trivy:
+    name: 🔭 Container Security Scan - ${{ matrix.variant.name }}
+    runs-on: ubuntu-latest
+    needs: [docker, extract-version]
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      needs.docker.result == 'success' &&
+      needs.extract-version.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
+          - name: Distroless
+            image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy scan on ${{ matrix.variant.name }} image
+        uses: firestoned/github-actions/security/trivy-scan@v1.3.6
+        with:
+          image-ref: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
+          sarif-category: trivy-${{ github.event_name }}-${{ matrix.variant.name }}
+          upload-artifact-name: ${{ github.event_name == 'release' && format('trivy-release-{0}', matrix.variant.name) || format('trivy-main-{0}-{1}', matrix.variant.name, github.run_number) }}
+          output-filename: trivy-${{ github.event_name }}-${{ matrix.variant.name }}.json
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Release only: sign binaries with Cosign.
+  # ─────────────────────────────────────────────────────────────────────────────
+  sign-artifacts:
+    name: ✍️ Sign Binary Artifacts
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    needs: [build, extract-version]
+    permissions:
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - artifact_name: 5spot-linux-amd64
+            binary_name: 5spot
+          - artifact_name: 5spot-linux-arm64
+            binary_name: 5spot
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: ./artifacts/${{ matrix.platform.artifact_name }}
+
+      - name: Create tarball for signing
+        run: |
+          cd artifacts/${{ matrix.platform.artifact_name }}
+          chmod +x ${{ matrix.platform.binary_name }}
+          tar czf ${{ matrix.platform.artifact_name }}.tar.gz ${{ matrix.platform.binary_name }}
+          ls -lh ${{ matrix.platform.artifact_name }}.tar.gz
+
+      - name: Sign binary tarball with Cosign
+        uses: firestoned/github-actions/security/cosign-sign@v1.3.6
+        with:
+          artifact-path: artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}-signed
+          path: |
+            artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
+            artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz.bundle
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Release only: compute SHA-256 hashes of signed tarballs for SLSA.
+  # ─────────────────────────────────────────────────────────────────────────────
+  generate-provenance-subjects:
+    name: 🔬 Generate SLSA Provenance Subjects
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    needs: [sign-artifacts, extract-version]
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - name: Download signed artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: 5spot-*-signed
+          path: ./artifacts
+          merge-multiple: true
+
+      - name: Generate hashes for SLSA provenance
+        id: hash
+        run: |
+          cd artifacts
+          sha256sum *.tar.gz > checksums.txt
+          cat checksums.txt
+          echo "hashes=$(cat checksums.txt | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Release only: SLSA Level 3 provenance via the official generator.
+  # ─────────────────────────────────────────────────────────────────────────────
+  slsa-provenance:
+    name: 🏛️ Generate SLSA Provenance
+    if: github.event_name == 'release'
+    needs: [generate-provenance-subjects, extract-version]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: "${{ needs.generate-provenance-subjects.outputs.hashes }}"
+      upload-assets: true
+      provenance-name: "${{ needs.extract-version.outputs.version }}.intoto.jsonl"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Release only: regenerate and package the CRD deploy manifests.
+  # ─────────────────────────────────────────────────────────────────────────────
+  package-deploy-manifests:
+    name: 📦 Package Deployment Manifests
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    needs: [extract-version]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
+
+      - name: Regenerate CRDs
+        run: cargo run --bin crdgen > deploy/crds/scheduledmachine.yaml
+
+      - name: Package deploy manifests
+        run: tar czf deploy-manifests.tar.gz deploy/
+
+      - name: Upload deploy manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-manifests
+          path: deploy-manifests.tar.gz
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Release only: collate all artifacts and upload to the GitHub Release.
+  # ─────────────────────────────────────────────────────────────────────────────
+  upload-release-assets:
+    name: 🚀 Upload Release Assets
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    needs: [build, docker, attest, sign-artifacts, slsa-provenance, package-deploy-manifests]
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: 🧹 Organize release artifacts
+        run: |
+          cd artifacts
+          mkdir -p release sboms signatures provenance
+
+          # Copy signed tarballs and signature bundles
+          for dir in 5spot-*-signed; do
+            if [ -d "$dir" ]; then
+              platform="${dir%-signed}"
+              if compgen -G "$dir/*.tar.gz" > /dev/null; then
+                cp "$dir"/*.tar.gz release/
+              fi
+              if compgen -G "$dir/*.tar.gz.bundle" > /dev/null; then
+                cp "$dir"/*.tar.gz.bundle signatures/
+              fi
+            fi
+          done
+
+          # Collect binary SBOMs (Linux builds only)
+          for dir in 5spot-linux-amd64 5spot-linux-arm64; do
+            if [ -d "$dir" ] && compgen -G "$dir/*.cdx.json" > /dev/null; then
+              cp "$dir"/*.cdx.json "sboms/${dir}-sbom.json"
+            fi
+          done
+
+          # Copy Docker SBOMs
+          for variant in Chainguard Distroless; do
+            if [ -d "docker-sbom-${variant}" ] && [ -f "docker-sbom-${variant}/docker-sbom-${variant}.json" ]; then
+              cp "docker-sbom-${variant}/docker-sbom-${variant}.json" "sboms/docker-sbom-${variant}.json"
+            fi
+          done
+
+          # Copy SLSA provenance
+          find . -name "*.intoto.jsonl" -type f -exec cp {} provenance/ \;
+
+          # Copy deploy manifests
+          if [ -f "deploy-manifests/deploy-manifests.tar.gz" ]; then
+            cp deploy-manifests/deploy-manifests.tar.gz release/
+          fi
+
+          # Generate SHA256 checksums
+          cd release && sha256sum * > checksums.sha256
+          cd ../sboms && sha256sum *.json >> ../release/checksums.sha256
+          cd ../signatures && sha256sum *.bundle >> ../release/checksums.sha256
+          cd ../provenance && compgen -G "*.intoto.jsonl" > /dev/null && sha256sum *.intoto.jsonl >> ../release/checksums.sha256 || true
+
+          echo "Release artifacts:"
+          ls -lh ../release/
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/release/*.tar.gz
+            artifacts/sboms/*.json
+            artifacts/signatures/*.bundle
+            artifacts/provenance/*.intoto.jsonl
+            artifacts/release/checksums.sha256

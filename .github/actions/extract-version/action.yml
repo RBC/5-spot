@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, finos
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 name: 'Extract Version Information'
 description: 'Extracts version, tag name, and image tags for consistent use across workflows'

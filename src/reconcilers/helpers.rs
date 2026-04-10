@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 //! # Reconciliation helper functions
 //!
 //! Pure utility functions used by the [`scheduled_machine`](super::scheduled_machine)

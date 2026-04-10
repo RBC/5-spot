@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 //! # 5-Spot Machine Scheduler — Entry Point
 //!
 //! This binary starts the controller process. It:
@@ -12,11 +12,16 @@
 //! 6. Runs the `kube-rs` [`Controller`] loop, distributing reconciliation work
 //!    across all active instances via consistent hashing
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use five_spot::constants::{HEALTH_PORT, K8S_API_TIMEOUT_SECS, METRICS_PORT};
+use five_spot::constants::{
+    DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_GRACE_SECS, DEFAULT_LEASE_NAME,
+    DEFAULT_LEASE_NAMESPACE, DEFAULT_LEASE_RENEW_DEADLINE_SECS, DEFAULT_LEASE_RETRY_PERIOD_SECS,
+    HEALTH_PORT, K8S_API_TIMEOUT_SECS, METRICS_PORT,
+};
 use five_spot::crd::ScheduledMachine;
 use five_spot::health::{start_health_server, HealthState};
 use five_spot::metrics::init_controller_info;
@@ -64,6 +69,34 @@ struct Cli {
     /// Log format: "json" for structured JSON (SIEM/production), "text" for human-readable (local dev)
     #[clap(long, env = "RUST_LOG_FORMAT", default_value = "json")]
     log_format: String,
+
+    // -----------------------------------------------------------------------
+    // Leader election (Basel III HA)
+    // -----------------------------------------------------------------------
+    /// Enable leader election — only the lease holder reconciles resources.
+    /// Required for multi-replica deployments (Basel III HA / NIST SI-2).
+    #[clap(long, env = "ENABLE_LEADER_ELECTION", default_value = "false")]
+    enable_leader_election: bool,
+
+    /// Kubernetes Lease resource name used for leader election
+    #[clap(long, env = "LEASE_NAME", default_value = DEFAULT_LEASE_NAME)]
+    lease_name: String,
+
+    /// Namespace in which to create the leader election Lease
+    #[clap(long, env = "POD_NAMESPACE", default_value = DEFAULT_LEASE_NAMESPACE)]
+    lease_namespace: String,
+
+    /// Lease validity duration in seconds — how long the Lease is considered held
+    #[clap(long, env = "LEASE_DURATION_SECONDS", default_value_t = DEFAULT_LEASE_DURATION_SECS)]
+    lease_duration_secs: u64,
+
+    /// Renew deadline in seconds — the leader must renew before this many seconds elapse
+    #[clap(long, env = "LEASE_RENEW_DEADLINE_SECONDS", default_value_t = DEFAULT_LEASE_RENEW_DEADLINE_SECS)]
+    lease_renew_deadline_secs: u64,
+
+    /// Retry period in seconds — documented for ops parity; not a direct LeaseManager parameter
+    #[clap(long, env = "LEASE_RETRY_PERIOD_SECONDS", default_value_t = DEFAULT_LEASE_RETRY_PERIOD_SECS)]
+    _lease_retry_period_secs: u64,
 }
 
 /// Async entry point.
@@ -131,6 +164,74 @@ async fn main() -> Result<()> {
         cli.instance_id,
         cli.instance_count,
     ));
+
+    // Leader election (Basel III HA — P2-4)
+    //
+    // When enabled, all replicas start as non-leaders (is_leader = false).  A
+    // background task runs the LeaseManager and flips is_leader to true only
+    // when this instance holds the Kubernetes Lease.  reconcile_guarded returns
+    // Action::await_change() immediately for non-leaders, so standby replicas
+    // react instantly once they acquire the lease — without polling.
+    if cli.enable_leader_election {
+        let grace_secs = cli
+            .lease_duration_secs
+            .checked_sub(cli.lease_renew_deadline_secs)
+            .filter(|g| *g > 0)
+            .unwrap_or(DEFAULT_LEASE_GRACE_SECS);
+
+        let holder_id = std::env::var("CONTROLLER_POD_NAME")
+            .unwrap_or_else(|_| format!("5spot-{}", cli.instance_id));
+
+        info!(
+            lease_name = %cli.lease_name,
+            lease_namespace = %cli.lease_namespace,
+            lease_duration_secs = cli.lease_duration_secs,
+            grace_secs,
+            holder_id = %holder_id,
+            "Leader election enabled — starting as non-leader"
+        );
+
+        // All replicas start as non-leaders; the background task will flip
+        // is_leader once the Kubernetes Lease is acquired.
+        context.is_leader.store(false, Ordering::Release);
+
+        let manager = kube_lease_manager::LeaseManagerBuilder::new(client.clone(), &cli.lease_name)
+            .with_namespace(&cli.lease_namespace)
+            .with_duration(cli.lease_duration_secs)
+            .with_grace(grace_secs)
+            .with_identity(&holder_id)
+            .build()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to initialise leader election: {e}"))?;
+
+        let is_leader = Arc::clone(&context.is_leader);
+        tokio::spawn(async move {
+            let (mut channel, task) = manager.watch().await;
+            loop {
+                match channel.changed().await {
+                    Ok(()) => {
+                        let acquired = *channel.borrow_and_update();
+                        is_leader.store(acquired, Ordering::Release);
+                        if acquired {
+                            info!(holder_id = %holder_id, "Acquired leadership lease");
+                        } else {
+                            info!(holder_id = %holder_id, "Lost leadership lease — standby");
+                        }
+                    }
+                    Err(_) => {
+                        error!("Leader election watch channel closed unexpectedly");
+                        break;
+                    }
+                }
+            }
+            drop(channel);
+            if let Err(e) = task.await {
+                error!(error = %e, "Leader election background task failed");
+            }
+        });
+    } else {
+        info!("Leader election disabled — this instance will reconcile all resources");
+    }
 
     // Create API for ScheduledMachine resources
     let scheduled_machines = Api::<ScheduledMachine>::all(client.clone());

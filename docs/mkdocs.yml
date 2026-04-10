@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 # 5-Spot Documentation - MkDocs Material Configuration
 
@@ -25,21 +25,26 @@ theme:
   name: material
   language: en
 
-  # Color palette with dark mode support
-  # Colors for 5-Spot: blue/indigo for scheduling/time, green for active states
+  # Color palette with dark mode support.
+  # Both primary and accent are set to "custom" so the full palette is
+  # controlled via CSS variables in stylesheets/extra.css.
+  # Brand palette:
+  #   #8FB1CC  sky blue   (light primary / dark-mode primary)
+  #   #4F6D91  steel blue (dark primary / light-mode header)
+  #   #E17B4B  terracotta (accent)
   palette:
     # Light mode
     - scheme: default
-      primary: indigo
-      accent: teal
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
 
     # Dark mode
     - scheme: slate
-      primary: indigo
-      accent: teal
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
