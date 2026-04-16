@@ -113,7 +113,8 @@ fn main() {
     println!();
     println!("#### bootstrapSpec");
     println!();
-    println!("(required, object) Inline bootstrap configuration that will be created when the schedule is active.");
+    println!("(optional, object) Inline bootstrap configuration that will be created when the schedule is active.");
+    println!("Mutually exclusive with `bootstrapDataSecretName` — exactly one must be set.");
     println!("This is a fully unstructured object that must contain:");
     println!();
     println!("- **apiVersion** (required, string): API version of the bootstrap resource (e.g., `bootstrap.cluster.x-k8s.io/v1beta1`)");
@@ -125,6 +126,16 @@ fn main() {
     println!(
         "The controller validates that the apiVersion belongs to an allowed bootstrap API group."
     );
+    println!();
+    println!("#### bootstrapDataSecretName");
+    println!();
+    println!("(optional, string, non-empty) Name of an existing Secret containing bootstrap data");
+    println!("(e.g., an OpenShift worker ignition config). When set, 5-Spot skips creating a");
+    println!("bootstrap resource and sets `Machine.spec.bootstrap.dataSecretName` directly.");
+    println!("Mutually exclusive with `bootstrapSpec` — exactly one must be set.");
+    println!();
+    println!("Use this for OpenShift clusters where the worker ignition config is fetched from");
+    println!("the Machine Config Server and stored in a pre-existing Secret.");
     println!();
     println!("#### infrastructureSpec");
     println!();

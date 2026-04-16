@@ -802,21 +802,50 @@ pub async fn add_machine_to_cluster(
         "Creating CAPI resources from inline specs"
     );
 
-    // Extract required fields from embedded resources
-    let bootstrap_api_version = resource.spec.bootstrap_spec.api_version().ok_or_else(|| {
-        ReconcilerError::InvalidConfig(
-            "bootstrapSpec missing required field 'apiVersion'".to_string(),
-        )
-    })?;
-    let bootstrap_kind = resource.spec.bootstrap_spec.kind().ok_or_else(|| {
-        ReconcilerError::InvalidConfig("bootstrapSpec missing required field 'kind'".to_string())
-    })?;
-    let bootstrap_spec_inner = resource
-        .spec
-        .bootstrap_spec
-        .spec()
-        .cloned()
-        .unwrap_or_default();
+    // Validate: bootstrapSpec and bootstrapDataSecretName are mutually exclusive.
+    if resource.spec.bootstrap_spec.is_some() && resource.spec.bootstrap_data_secret_name.is_some()
+    {
+        return Err(ReconcilerError::InvalidConfig(
+            "bootstrapSpec and bootstrapDataSecretName are mutually exclusive".to_string(),
+        ));
+    }
+
+    // Validate: bootstrapDataSecretName must not be empty when set.
+    if let Some(ref name) = resource.spec.bootstrap_data_secret_name {
+        if name.is_empty() {
+            return Err(ReconcilerError::InvalidConfig(
+                "bootstrapDataSecretName must not be empty".to_string(),
+            ));
+        }
+    }
+
+    // Determine bootstrap mode: either an inline bootstrap resource or a pre-existing secret.
+    let use_data_secret = resource.spec.bootstrap_data_secret_name.is_some();
+
+    let (bootstrap_api_version, bootstrap_kind, bootstrap_spec_inner);
+    if use_data_secret {
+        // When using a pre-existing secret, these are unused but need defaults.
+        bootstrap_api_version = "";
+        bootstrap_kind = "";
+        bootstrap_spec_inner = serde_json::Value::Null;
+    } else {
+        let bs = resource.spec.bootstrap_spec.as_ref().ok_or_else(|| {
+            ReconcilerError::InvalidConfig(
+                "either bootstrapSpec or bootstrapDataSecretName is required".to_string(),
+            )
+        })?;
+        bootstrap_api_version = bs.api_version().ok_or_else(|| {
+            ReconcilerError::InvalidConfig(
+                "bootstrapSpec missing required field 'apiVersion'".to_string(),
+            )
+        })?;
+        bootstrap_kind = bs.kind().ok_or_else(|| {
+            ReconcilerError::InvalidConfig(
+                "bootstrapSpec missing required field 'kind'".to_string(),
+            )
+        })?;
+        bootstrap_spec_inner = bs.spec().cloned().unwrap_or_default();
+    }
 
     let infra_api_version = resource
         .spec
@@ -840,11 +869,13 @@ pub async fn add_machine_to_cluster(
         .unwrap_or_default();
 
     // Validate API groups before creating any resources
-    validate_api_group(
-        bootstrap_api_version,
-        ALLOWED_BOOTSTRAP_API_GROUPS,
-        "bootstrap",
-    )?;
+    if !use_data_secret {
+        validate_api_group(
+            bootstrap_api_version,
+            ALLOWED_BOOTSTRAP_API_GROUPS,
+            "bootstrap",
+        )?;
+    }
     validate_api_group(
         infra_api_version,
         ALLOWED_INFRASTRUCTURE_API_GROUPS,
@@ -873,35 +904,38 @@ pub async fn add_machine_to_cluster(
     let bootstrap_ns = namespace;
     let infra_ns = namespace;
 
-    // 1. Create bootstrap resource
-    // NOTE: No ownerReferences here - the bootstrap controller (e.g., k0smotron) needs to
-    // process this resource. We use labels for tracking instead, and the CAPI Machine's
-    // bootstrap.configRef provides the logical relationship.
-    let bootstrap_obj = json!({
-        "apiVersion": bootstrap_api_version,
-        "kind": bootstrap_kind,
-        "metadata": {
-            "name": name,
-            "namespace": bootstrap_ns,
-            "labels": {
-                "5spot.finos.org/scheduled-machine": name,
-                CAPI_CLUSTER_NAME_LABEL: cluster_name,
+    // 1. Create bootstrap resource (skipped when using dataSecretName)
+    if !use_data_secret {
+        let bootstrap_obj = json!({
+            "apiVersion": bootstrap_api_version,
+            "kind": bootstrap_kind,
+            "metadata": {
+                "name": name,
+                "namespace": bootstrap_ns,
+                "labels": {
+                    "5spot.finos.org/scheduled-machine": name,
+                    CAPI_CLUSTER_NAME_LABEL: cluster_name,
+                },
             },
-        },
-        "spec": bootstrap_spec_inner,
-    });
+            "spec": bootstrap_spec_inner,
+        });
 
-    create_dynamic_resource(
-        client,
-        bootstrap_ns,
-        bootstrap_api_version,
-        bootstrap_kind,
-        bootstrap_obj,
-    )
-    .await
-    .map_err(|e| ReconcilerError::CapiError(format!("Failed to create bootstrap resource: {e}")))?;
+        create_dynamic_resource(
+            client,
+            bootstrap_ns,
+            bootstrap_api_version,
+            bootstrap_kind,
+            bootstrap_obj,
+        )
+        .await
+        .map_err(|e| {
+            ReconcilerError::CapiError(format!("Failed to create bootstrap resource: {e}"))
+        })?;
 
-    info!(kind = %bootstrap_kind, "Bootstrap resource created");
+        info!(kind = %bootstrap_kind, "Bootstrap resource created");
+    } else {
+        info!("Using pre-existing bootstrap data secret");
+    }
 
     // 2. Create infrastructure resource
     // NOTE: No ownerReferences here - the infrastructure controller (e.g., CAPM3, CAPA) needs to
@@ -952,6 +986,21 @@ pub async fn add_machine_to_cluster(
         }
     }
 
+    let bootstrap_json = if let Some(secret_name) = &resource.spec.bootstrap_data_secret_name {
+        json!({
+            "dataSecretName": secret_name,
+        })
+    } else {
+        json!({
+            "configRef": {
+                "apiVersion": bootstrap_api_version,
+                "kind": bootstrap_kind,
+                "name": name,
+                "namespace": bootstrap_ns,
+            }
+        })
+    };
+
     let machine_obj = json!({
         "apiVersion": CAPI_MACHINE_API_VERSION_FULL,
         "kind": "Machine",
@@ -964,14 +1013,7 @@ pub async fn add_machine_to_cluster(
         },
         "spec": {
             "clusterName": cluster_name,
-            "bootstrap": {
-                "configRef": {
-                    "apiVersion": bootstrap_api_version,
-                    "kind": bootstrap_kind,
-                    "name": name,
-                    "namespace": bootstrap_ns,
-                }
-            },
+            "bootstrap": bootstrap_json,
             "infrastructureRef": {
                 "apiVersion": infra_api_version,
                 "kind": infra_kind,
@@ -1140,11 +1182,22 @@ pub async fn remove_machine_from_cluster(
         }
     }
 
-    // 2. Delete bootstrap resource (no ownerReference, must delete explicitly)
-    let bootstrap_api_version = resource.spec.bootstrap_spec.api_version();
-    let bootstrap_kind = resource.spec.bootstrap_spec.kind();
-    if let (Some(api_version), Some(kind)) = (bootstrap_api_version, bootstrap_kind) {
-        delete_dynamic_resource(client, namespace, api_version, kind, &name).await?;
+    // 2. Delete bootstrap resource (no ownerReference, must delete explicitly).
+    // Skip when bootstrapDataSecretName was used — no bootstrap resource was created.
+    if resource.spec.bootstrap_data_secret_name.is_none() {
+        let bootstrap_api_version = resource
+            .spec
+            .bootstrap_spec
+            .as_ref()
+            .and_then(|bs| bs.api_version());
+        let bootstrap_kind = resource
+            .spec
+            .bootstrap_spec
+            .as_ref()
+            .and_then(|bs| bs.kind());
+        if let (Some(api_version), Some(kind)) = (bootstrap_api_version, bootstrap_kind) {
+            delete_dynamic_resource(client, namespace, api_version, kind, &name).await?;
+        }
     }
 
     // 3. Delete infrastructure resource (no ownerReference, must delete explicitly)

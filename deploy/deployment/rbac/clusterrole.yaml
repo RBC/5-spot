@@ -11,6 +11,10 @@ rules:
   - apiGroups: ["5spot.finos.org"]
     resources: ["scheduledmachines", "scheduledmachines/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Finalizers permission required for blockOwnerDeletion in Machine ownerReferences
+  - apiGroups: ["5spot.finos.org"]
+    resources: ["scheduledmachines/finalizers"]
+    verbs: ["update"]
 
   # CAPI Machine management
   - apiGroups: ["cluster.x-k8s.io"]

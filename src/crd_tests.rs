@@ -217,11 +217,12 @@ mod tests {
                 enabled: true,
             },
             cluster_name: "test-cluster".to_string(),
-            bootstrap_spec: EmbeddedResource(json!({
+            bootstrap_data_secret_name: None,
+            bootstrap_spec: Some(EmbeddedResource(json!({
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
                 "kind": "K0sWorkerConfig",
                 "spec": {"args": []}
-            })),
+            }))),
             infrastructure_spec: EmbeddedResource(json!({
                 "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
                 "kind": "RemoteMachine",

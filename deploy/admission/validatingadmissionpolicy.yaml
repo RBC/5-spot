@@ -103,18 +103,33 @@ spec:
         (e.g. '9', '9-17', '0-9,18-23')
       reason: Invalid
 
-    # ── 8. bootstrapSpec.apiVersion must use a namespaced API group ───────────
-    # Core API versions (e.g. "v1") have no '/' and must never be used for
-    # bootstrap resources — rejects the same case as validate_api_group() at runtime.
-    - expression: "object.spec.bootstrapSpec.apiVersion.contains('/')"
+    # ── 8. Either bootstrapSpec or bootstrapDataSecretName must be set ───────
+    - expression: "has(object.spec.bootstrapSpec) || has(object.spec.bootstrapDataSecretName)"
+      message: "either spec.bootstrapSpec or spec.bootstrapDataSecretName must be set"
+      reason: Invalid
+
+    # ── 8a. bootstrapSpec and bootstrapDataSecretName must not both be set ───
+    - expression: "!(has(object.spec.bootstrapSpec) && has(object.spec.bootstrapDataSecretName))"
+      message: "spec.bootstrapSpec and spec.bootstrapDataSecretName are mutually exclusive"
+      reason: Invalid
+
+    # ── 8b. bootstrapDataSecretName must not be empty when set ────────────────
+    - expression: "!has(object.spec.bootstrapDataSecretName) || object.spec.bootstrapDataSecretName.size() > 0"
+      message: "spec.bootstrapDataSecretName must not be empty"
+      reason: Invalid
+
+    # ── 9. bootstrapSpec.apiVersion must use a namespaced API group ───────────
+    # Skipped when bootstrapDataSecretName is used instead.
+    - expression: "!has(object.spec.bootstrapSpec) || object.spec.bootstrapSpec.apiVersion.contains('/')"
       message: >-
         spec.bootstrapSpec.apiVersion must use a namespaced API group
         (e.g. 'bootstrap.cluster.x-k8s.io/v1beta1') — core API versions are not permitted
       reason: Invalid
 
-    # ── 9. bootstrapSpec.apiVersion must be from an allowed provider group ────
+    # ── 10. bootstrapSpec.apiVersion must be from an allowed provider group ───
     # Mirrors ALLOWED_BOOTSTRAP_API_GROUPS in src/constants.rs.
     - expression: |
+        !has(object.spec.bootstrapSpec) ||
         object.spec.bootstrapSpec.apiVersion.startsWith('bootstrap.cluster.x-k8s.io/') ||
         object.spec.bootstrapSpec.apiVersion.startsWith('k0smotron.io/')
       message: >-
@@ -122,8 +137,8 @@ spec:
         bootstrap.cluster.x-k8s.io or k0smotron.io
       reason: Invalid
 
-    # ── 10. bootstrapSpec.kind must not be empty ──────────────────────────────
-    - expression: "object.spec.bootstrapSpec.kind.size() > 0"
+    # ── 11. bootstrapSpec.kind must not be empty ──────────────────────────────
+    - expression: "!has(object.spec.bootstrapSpec) || object.spec.bootstrapSpec.kind.size() > 0"
       message: "spec.bootstrapSpec.kind must not be empty"
       reason: Invalid
 

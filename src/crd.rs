@@ -47,8 +47,19 @@ pub struct ScheduledMachineSpec {
     pub cluster_name: String,
 
     /// Inline bootstrap configuration spec (e.g., `K0sWorkerConfig`)
-    /// This resource will be created when the schedule is active
-    pub bootstrap_spec: EmbeddedResource,
+    /// This resource will be created when the schedule is active.
+    /// Not required when bootstrapDataSecretName is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_spec: Option<EmbeddedResource>,
+
+    /// Name of an existing Secret containing bootstrap data (e.g., ignition).
+    /// When set, 5-Spot skips creating a bootstrap resource and sets
+    /// Machine.spec.bootstrap.dataSecretName directly. Use this for
+    /// OpenShift clusters where the ignition config is fetched from the
+    /// Machine Config Server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "non_empty_string_schema")]
+    pub bootstrap_data_secret_name: Option<String>,
 
     /// Inline infrastructure configuration spec (e.g., `RemoteMachine`)
     /// This resource will be created when the schedule is active
@@ -206,6 +217,15 @@ impl EmbeddedResource {
 }
 
 /// Schema for the timezone field — bounded string to prevent log injection
+/// Schema for a non-empty string field. Adds `minLength: 1` to reject
+/// empty strings at the CRD validation level.
+fn non_empty_string_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 1
+    })
+}
+
 fn timezone_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({
         "type": "string",

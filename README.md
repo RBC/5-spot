@@ -117,6 +117,62 @@ spec:
   gracefulShutdownTimeout: 5m
 ```
 
+### OpenShift Example (using bootstrapDataSecretName)
+
+For OpenShift clusters, the worker ignition config is fetched from the
+Machine Config Server and stored in a pre-existing Secret. Use
+`bootstrapDataSecretName` instead of `bootstrapSpec`:
+
+```yaml
+apiVersion: 5spot.finos.org/v1alpha1
+kind: ScheduledMachine
+metadata:
+  name: ocp-worker-01
+  namespace: default
+spec:
+  schedule:
+    daysOfWeek:
+      - mon-fri
+    hoursOfDay:
+      - 9-17
+    timezone: America/New_York
+    enabled: true
+
+  clusterName: my-ocp-cluster
+  bootstrapDataSecretName: worker-bootstrap
+
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+    kind: LibvirtMachine
+    spec:
+      hostRef:
+        name: rhel-host-01
+      domain:
+        vcpus: 4
+        memoryMB: 8192
+      network:
+        type: bridge
+        name: br0
+        addresses:
+          - "192.168.1.50/24"
+        gateway: "192.168.1.1"
+        dns:
+          nameservers:
+            - "192.168.1.1"
+      rootDisk:
+        baseImage: "rhcos.qcow2"
+        storagePool: "default"
+        size: "100Gi"
+      bootstrapFormat: ignition
+
+  priority: 50
+  gracefulShutdownTimeout: 5m
+```
+
+`bootstrapDataSecretName` and `bootstrapSpec` are mutually exclusive —
+set exactly one. The Secret must exist before the ScheduledMachine is
+created.
+
 ## Development
 
 ### Prerequisites

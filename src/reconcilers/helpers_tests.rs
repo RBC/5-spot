@@ -1076,4 +1076,87 @@ mod tests {
             "large retry count should always return max backoff"
         );
     }
+
+    // ========================================================================
+    // bootstrapDataSecretName — mutual exclusivity and validation
+    // ========================================================================
+
+    /// Deserializing a ScheduledMachine with bootstrapDataSecretName and no
+    /// bootstrapSpec should succeed.
+    #[test]
+    fn test_deserialize_with_bootstrap_data_secret_name_only() {
+        let json = serde_json::json!({
+            "clusterName": "test",
+            "bootstrapDataSecretName": "worker-bootstrap",
+            "infrastructureSpec": {
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "LibvirtMachine",
+                "spec": {}
+            },
+            "schedule": {
+                "daysOfWeek": ["mon-fri"],
+                "hoursOfDay": ["9-17"],
+                "timezone": "UTC",
+                "enabled": true
+            }
+        });
+        let spec: crate::crd::ScheduledMachineSpec = serde_json::from_value(json).unwrap();
+        assert!(spec.bootstrap_spec.is_none());
+        assert_eq!(
+            spec.bootstrap_data_secret_name.as_deref(),
+            Some("worker-bootstrap")
+        );
+    }
+
+    /// Deserializing a ScheduledMachine with bootstrapSpec and no
+    /// bootstrapDataSecretName should succeed (existing behavior).
+    #[test]
+    fn test_deserialize_with_bootstrap_spec_only() {
+        let json = serde_json::json!({
+            "clusterName": "test",
+            "bootstrapSpec": {
+                "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                "kind": "K0sWorkerConfig",
+                "spec": {}
+            },
+            "infrastructureSpec": {
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "RemoteMachine",
+                "spec": {}
+            },
+            "schedule": {
+                "daysOfWeek": ["mon-fri"],
+                "hoursOfDay": ["9-17"],
+                "timezone": "UTC",
+                "enabled": true
+            }
+        });
+        let spec: crate::crd::ScheduledMachineSpec = serde_json::from_value(json).unwrap();
+        assert!(spec.bootstrap_spec.is_some());
+        assert!(spec.bootstrap_data_secret_name.is_none());
+    }
+
+    /// Deserializing with neither bootstrapSpec nor bootstrapDataSecretName
+    /// should succeed at the deserialization level (validation happens at
+    /// admission and runtime).
+    #[test]
+    fn test_deserialize_with_neither_bootstrap_field() {
+        let json = serde_json::json!({
+            "clusterName": "test",
+            "infrastructureSpec": {
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "RemoteMachine",
+                "spec": {}
+            },
+            "schedule": {
+                "daysOfWeek": ["mon-fri"],
+                "hoursOfDay": ["9-17"],
+                "timezone": "UTC",
+                "enabled": true
+            }
+        });
+        let spec: crate::crd::ScheduledMachineSpec = serde_json::from_value(json).unwrap();
+        assert!(spec.bootstrap_spec.is_none());
+        assert!(spec.bootstrap_data_secret_name.is_none());
+    }
 }

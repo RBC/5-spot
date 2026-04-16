@@ -1,0 +1,71 @@
+# Copyright (c) 2026 Anthony Green
+# SPDX-License-Identifier: Apache-2.0
+
+# Example ScheduledMachine for OpenShift clusters
+# Uses bootstrapDataSecretName instead of bootstrapSpec to reference
+# a pre-existing Secret containing the worker ignition config fetched
+# from the OpenShift Machine Config Server.
+#
+# Prerequisites:
+#   1. Fetch the worker ignition from the MCS:
+#      ssh core@<node> "sudo curl -sk \
+#        -H 'Accept: application/vnd.coreos.ignition+json;version=3.2.0' \
+#        https://localhost:22623/config/worker" > worker-ignition.json
+#
+#   2. Create the bootstrap secret:
+#      kubectl create secret generic worker-bootstrap -n default \
+#        --from-file=value=worker-ignition.json \
+#        --from-literal=format=ignition
+
+apiVersion: 5spot.finos.org/v1alpha1
+kind: ScheduledMachine
+metadata:
+  name: ocp-worker-01
+  namespace: default
+spec:
+  # Name of the CAPI Cluster this machine will join
+  clusterName: my-ocp-cluster
+
+  # Schedule configuration
+  schedule:
+    daysOfWeek:
+      - mon-fri
+    hoursOfDay:
+      - "9-17"
+    timezone: America/New_York
+    enabled: true
+
+  # Reference a pre-existing Secret containing the worker ignition.
+  # Mutually exclusive with bootstrapSpec.
+  bootstrapDataSecretName: worker-bootstrap
+
+  # Inline infrastructure specification (creates LibvirtMachine)
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+    kind: LibvirtMachine
+    spec:
+      hostRef:
+        name: rhel-host-01
+      domain:
+        vcpus: 4
+        memoryMB: 8192
+      network:
+        type: bridge
+        name: br0
+        addresses:
+          - "192.168.1.50/24"
+        gateway: "192.168.1.1"
+        dns:
+          nameservers:
+            - "192.168.1.1"
+      rootDisk:
+        baseImage: "rhcos.qcow2"
+        storagePool: "default"
+        size: "100Gi"
+      bootstrapFormat: ignition
+
+  # Lifecycle settings
+  priority: 50
+  gracefulShutdownTimeout: 5m
+  nodeDrainTimeout: 5m
+  killSwitch: false

@@ -9,6 +9,29 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-16 17:30] - Add bootstrapDataSecretName for OpenShift worker support
+
+**Author:** Anthony Green
+
+### Changed
+- `src/crd.rs`: Made `bootstrapSpec` optional, added `bootstrapDataSecretName` field with `minLength: 1` schema validation
+- `src/reconcilers/helpers.rs`: Conditional create/delete paths for bootstrap resources, mutual exclusivity and non-empty validation
+- `src/reconcilers/helpers_tests.rs`: Added deserialization tests for new bootstrap field combinations
+- `deploy/crds/scheduledmachine.yaml`: Regenerated CRD from Rust types
+- `deploy/admission/validatingadmissionpolicy.yaml`: Guarded bootstrapSpec rules with `has()`, added mutual exclusivity and non-empty checks
+- `deploy/deployment/rbac/clusterrole.yaml`: Added `scheduledmachines/finalizers` permission for `blockOwnerDeletion`
+
+### Why
+OpenShift clusters bootstrap workers via ignition configs from the Machine Config Server, not through a CAPI bootstrap provider. There is no OpenShift-native CAPI bootstrap provider, and KubeadmConfig is incompatible. Users need a way to reference a pre-existing ignition secret instead of creating a bootstrap resource.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-04-10 08:50] - Extend Cosign image signing to main-branch pushes
 
 **Author:** Erick Bourgeois
