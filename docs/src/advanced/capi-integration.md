@@ -47,26 +47,28 @@ spec:
 
 ### Bootstrap Configuration
 
-Reference to bootstrap provider configuration:
+Inline bootstrap provider spec — 5-Spot creates this resource when the schedule window opens:
 
 ```yaml
-bootstrapRef:
+bootstrapSpec:
   apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
-  kind: KubeadmConfigTemplate
-  name: worker-bootstrap-template
-  namespace: default
+  kind: K0sWorkerConfig
+  spec:
+    version: v1.30.0+k0s.0
 ```
 
-### Infrastructure Template
+### Infrastructure Specification
 
-Reference to infrastructure provider template:
+Inline infrastructure provider spec — 5-Spot creates this resource when the schedule window opens:
 
 ```yaml
-infrastructureRef:
+infrastructureSpec:
   apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-  kind: Metal3MachineTemplate
-  name: worker-machine-template
-  namespace: default
+  kind: RemoteMachine
+  spec:
+    address: 192.168.1.100
+    port: 22
+    user: admin
 ```
 
 ## Supported Providers
@@ -132,34 +134,39 @@ sequenceDiagram
 
 ```yaml
 spec:
-  bootstrapRef:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
-    kind: K0sWorkerConfigTemplate
-    name: worker-config
-    namespace: default
-  infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-    kind: K0smotronMachineTemplate
-    name: k0s-worker
-    namespace: default
   clusterName: k0s-cluster
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    kind: K0sWorkerConfig
+    spec:
+      version: v1.30.0+k0s.0
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: RemoteMachine
+    spec:
+      address: 192.168.1.100
+      port: 22
+      user: admin
 ```
 
 ### Metal3
 
 ```yaml
 spec:
-  bootstrapRef:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
-    kind: KubeadmConfigTemplate
-    name: kubeadm-worker
-    namespace: default
-  infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-    kind: Metal3MachineTemplate
-    name: metal3-worker
-    namespace: default
   clusterName: metal3-cluster
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    kind: KubeadmConfig
+    spec:
+      joinConfiguration:
+        nodeRegistration: {}
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: Metal3Machine
+    spec:
+      image:
+        url: http://example.com/ubuntu.img
+        checksum: sha256:abc123
 ```
 
 ## Error Handling

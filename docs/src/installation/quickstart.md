@@ -44,29 +44,28 @@ spec:
     daysOfWeek:
       - mon-fri
     hoursOfDay:
-      - 9-17
+      - "9-17"
     timezone: UTC
     enabled: true
-  
-  machine:
-    address: 192.168.1.100
-    user: admin
-    port: 22
-    files: []
-  
-  bootstrapRef:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
-    kind: KubeadmConfigTemplate
-    name: worker-bootstrap-config
-    namespace: default
-  
-  infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-    kind: MachineTemplate
-    name: worker-machine-template
-    namespace: default
-  
+
   clusterName: my-cluster
+
+  # Inline bootstrap configuration — 5-Spot creates this resource for you
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    kind: K0sWorkerConfig
+    spec:
+      version: v1.30.0+k0s.0
+
+  # Inline infrastructure configuration — 5-Spot creates this resource for you
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: RemoteMachine
+    spec:
+      address: 192.168.1.100
+      port: 22
+      user: admin
+
   priority: 50
   gracefulShutdownTimeout: 5m
 ```

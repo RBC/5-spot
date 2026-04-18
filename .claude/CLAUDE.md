@@ -10,6 +10,7 @@
 > - **Event-Driven Programming**: In Kubernetes controller development, ALWAYS use event-driven programming (e.g., "watch" on kube API) as opposed to polling. Controllers must react to cluster state changes efficiently.
 > - **Early Returns**: Use as few `else` statements as possible. Return from functions as soon as you can to minimize nesting and improve code clarity (see Early Return / Guard Clause Pattern section).
 > - **ALWAYS Run cargo fmt**: At the end of EVERY task or phase involving Rust code, you MUST run the `cargo-quality` skill. This is NON-NEGOTIABLE and MANDATORY.
+> - **ALWAYS Sync Docs**: At the end of EVERY task, you MUST run the `sync-docs` skill to verify documentation matches the code. This is NON-NEGOTIABLE and MANDATORY.
 
 ---
 

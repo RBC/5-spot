@@ -126,7 +126,7 @@ Optional configuration applied to the created CAPI Machine.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `clusterName` | `string` | Yes | - | Name of the CAPI cluster. |
-| `priority` | `int` | No | `50` | Priority (0-100). Higher = more important. |
+| `priority` | `int` | No | `50` | Priority (0-255). Higher = more important. |
 | `gracefulShutdownTimeout` | `string` | No | `5m` | Time for graceful machine shutdown. |
 | `nodeDrainTimeout` | `string` | No | `5m` | Timeout for draining the node before deletion. |
 | `killSwitch` | `bool` | No | `false` | Immediately remove machine if true. |

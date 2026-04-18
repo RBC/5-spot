@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom
+.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit
 
 # Image configuration
 REGISTRY ?= ghcr.io
@@ -399,3 +399,7 @@ sbom: ## Generate CycloneDX SBOM (Software Bill of Materials)
 	@command -v cargo-cyclonedx >/dev/null 2>&1 || { echo "Installing cargo-cyclonedx..."; cargo install cargo-cyclonedx; }
 	@cargo cyclonedx --format json --spec-version 1.4
 	@echo "✓ SBOM generated: five_spot.cdx.json"
+
+audit: ## Check dependencies for security vulnerabilities (installs cargo-audit if missing)
+	@command -v cargo-audit >/dev/null 2>&1 || { echo "Installing cargo-audit..."; cargo install cargo-audit; }
+	@cargo audit

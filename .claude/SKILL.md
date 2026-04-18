@@ -171,6 +171,38 @@ Brief explanation of the business or technical reason.
 
 ---
 
+## `sync-docs`
+
+**When to use:**
+- At the end of EVERY task (MANDATORY — same requirement as `cargo-quality`)
+- Before opening a PR
+- Any time docs may be out of sync with code
+
+**Steps:**
+
+For each of the following files, check the YAML examples and field descriptions
+against `src/crd.rs` (source of truth) and `examples/*.yaml` (reference examples):
+
+1. `docs/src/installation/quickstart.md` — YAML example in "Create Your First ScheduledMachine"
+2. `docs/reference/api.md` — all Spec Fields, Status Fields, and the top-level example
+3. `docs/src/advanced/capi-integration.md` — Bootstrap/Infrastructure sections and provider examples
+4. `docs/src/concepts/scheduled-machine.md` — field tables (types, defaults, required flags)
+5. Any other `.md` file under `docs/` that contains a YAML snippet with `kind: ScheduledMachine`
+
+**What to check:**
+
+- Field names match the Rust struct (remember: `snake_case` in Rust → `camelCase` in YAML)
+- No non-existent fields (common culprits: `machine`, `bootstrapRef`/`infrastructureRef` at spec level)
+- `bootstrapSpec` and `infrastructureSpec` use inline `spec:` — NOT `name:`/`namespace:` refs
+- `priority` range is 0-255 (not 0-100)
+- Phase values match: `Pending`, `Active`, `ShuttingDown`, `Inactive`, `Disabled`, `Terminated`, `Error`
+- Status field names: `lastScheduledTime`, `nextActivation`, `nextCleanup`, `inSchedule`
+- `machineRef` has `apiVersion`, `kind`, `name`, `namespace` — no `uid`
+
+**Verification:** No field in any doc example diverges from `src/crd.rs`.
+
+---
+
 ## `update-docs`
 
 **When to use:**
@@ -281,6 +313,7 @@ done
 - [ ] Troubleshooting guides updated for new error conditions
 
 ### Always:
+- [ ] `sync-docs` skill passed — no doc/code divergence
 - [ ] `.claude/CHANGELOG.md` updated with **Author:** line (MANDATORY)
 - [ ] All YAML examples validate: `kubectl apply --dry-run=client -f examples/`
 - [ ] `kubectl apply --dry-run=client -f deploy/crds/` succeeds
