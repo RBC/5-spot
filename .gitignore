@@ -4,6 +4,10 @@
 /binaries
 *.cdx.json
 
+# Python bytecode from tools/ (validator / assembler)
+__pycache__/
+*.pyc
+
 # Generated CALM diagrams (rendered by `make calm-diagrams` / CI).
 # Source: docs/architecture/calm/templates/mermaid/*.md.hbs
 /docs/src/architecture/

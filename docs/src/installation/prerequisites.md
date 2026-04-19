@@ -10,20 +10,32 @@ Before installing 5-Spot, ensure your environment meets the following requiremen
 
 ## Cluster API (CAPI)
 
-5-Spot integrates with Cluster API for machine management.
+5-Spot integrates with Cluster API for machine management. It is
+provider-agnostic: ScheduledMachine's `bootstrapSpec` and
+`infrastructureSpec` embed whatever bootstrap / infrastructure CRDs
+your CAPI installation provides.
 
 ### Required Components
 
 - CAPI Core Provider (v1.5+)
-- Bootstrap Provider (e.g., KubeadmBootstrapProvider)
-- Infrastructure Provider (e.g., Metal3, Packet, vSphere)
+- A **Bootstrap Provider** — e.g. `K0sWorkerConfig` (k0smotron),
+  `KubeadmConfig` (kubeadm bootstrap)
+- An **Infrastructure Provider** — e.g. `RemoteMachine` (k0smotron),
+  `Metal3Machine`, `PacketMachine`, `VSphereMachine`
+
+The quickstart uses k0smotron (`K0sWorkerConfig` + `RemoteMachine`)
+because it needs no cloud credentials; substitute your own provider
+CRDs as appropriate.
 
 ### Verify CAPI Installation
 
 ```bash
-# Check CAPI components
+# Check CAPI core
 kubectl get pods -n capi-system
-kubectl get pods -n capi-kubeadm-bootstrap-system
+
+# Check the bootstrap + infrastructure providers you installed
+# (namespace varies: capi-kubeadm-bootstrap-system, k0smotron, etc.)
+kubectl get pods -A | grep -E 'capi|k0smotron'
 
 # Verify CRDs
 kubectl get crds | grep cluster.x-k8s.io
@@ -33,17 +45,26 @@ kubectl get crds | grep cluster.x-k8s.io
 
 | Source | Destination | Port | Protocol | Purpose |
 |--------|-------------|------|----------|---------|
-| Operator Pod | Kubernetes API | 443/6443 | HTTPS | API access |
-| Operator Pod | Target Machines | 22 | SSH | Machine provisioning |
+| Operator Pod | Kubernetes API | 443/6443 | HTTPS | Reconciles CAPI CRs |
+| Prometheus | Operator Pod | 8080 | HTTP | `/metrics` scrape |
+| Kubelet | Operator Pod | 8081 | HTTP | liveness/readiness probes |
+
+5-Spot itself only talks to the Kubernetes API — it does not SSH to
+machines. Any SSH egress to target hardware is performed by the
+infrastructure provider (e.g. k0smotron's RemoteMachine controller),
+not by 5-Spot.
 
 ## Resource Requirements
 
 ### Operator Pod
 
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| CPU | 100m | 250m |
-| Memory | 128Mi | 256Mi |
+| Resource | Request | Limit |
+|----------|---------|-------|
+| CPU | 100m | 500m |
+| Memory | 128Mi | 512Mi |
+
+These values match the shipped `deploy/deployment/deployment.yaml`;
+override via your kustomize/Helm overlay if your workload needs more.
 
 ### Storage
 

@@ -17,7 +17,7 @@ It identifies assets, trust boundaries, threat actors, per-component STRIDE thre
 - The controller process (`five_spot` binary) and its Kubernetes RBAC surface
 - The `ScheduledMachine` Custom Resource Definition and its admission path
 - All Kubernetes API interactions (CAPI Machine, Bootstrap, Infrastructure, Nodes, Pods)
-- The metrics (`/metrics`) and health (`/health`, `/ready`) HTTP endpoints
+- The metrics (`/metrics`) and health (`/healthz`, `/readyz`) HTTP endpoints
 
 **Out of scope:**
 - The underlying k0smotron / CAPI infrastructure providers
@@ -37,7 +37,7 @@ flowchart TB
         subgraph ctrl["5-Spot Controller Pod"]
             C["Controller Process\n(five_spot binary)"]
             M[":8080 /metrics"]
-            H[":8081 /health · /ready"]
+            H[":8081 /healthz · /readyz"]
         end
 
         subgraph input["User Input — ScheduledMachine CR"]
@@ -203,7 +203,7 @@ flowchart LR
 | ID | Threat | Likelihood | Impact | Status |
 |---|---|---|---|---|
 | T9 | Memory corruption in unsafe Rust code or via malformed serde input | Very Low | Critical | **Mitigated** — codebase is safe Rust; no `unsafe` blocks; serde handles malformed input with errors |
-| T10 | Supply chain attack via malicious crate version | Low | Critical | **Residual risk** — mitigated by Trivy container scan in CI; no automated dependency pinning beyond Cargo.lock |
+| T10 | Supply chain attack via malicious crate version | Low | Critical | **Residual risk** — mitigated by Grype container scan (VEX-aware) in CI; no automated dependency pinning beyond Cargo.lock |
 
 #### Information Disclosure
 | ID | Threat | Likelihood | Impact | Status |

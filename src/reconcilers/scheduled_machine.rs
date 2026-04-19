@@ -100,13 +100,14 @@ pub struct Context {
 impl Context {
     /// Create a new `Context`, initialising the event recorder from the client.
     ///
-    /// The recorder uses `CONTROLLER_POD_NAME` from the environment as the
-    /// reporting instance name (optional; falls back to `None`).
+    /// The recorder uses `POD_NAME` from the environment (injected via the
+    /// downward API) as the reporting instance name — optional; falls back
+    /// to `None` when unset (e.g. local `cargo run`).
     #[must_use]
     pub fn new(client: Client, instance_id: u32, instance_count: u32) -> Self {
         let reporter = Reporter {
             controller: CONTROLLER_NAME.to_string(),
-            instance: std::env::var("CONTROLLER_POD_NAME").ok(),
+            instance: std::env::var("POD_NAME").ok(),
         };
         let recorder = Recorder::new(client.clone(), reporter);
         Self {

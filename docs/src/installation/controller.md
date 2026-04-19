@@ -7,8 +7,13 @@ This guide covers deploying the 5-Spot controller to your Kubernetes cluster.
 ### Using kubectl
 
 ```bash
-kubectl apply -f deploy/deployment/
+kubectl apply -R -f deploy/deployment/
 ```
+
+The `-R` (recursive) flag is required so `deploy/deployment/rbac/`
+(ServiceAccount, ClusterRole, ClusterRoleBinding) is included. Without
+it the Deployment will be created but fail to schedule with
+`serviceaccount "5spot-controller" not found`.
 
 ### Using Helm (Coming Soon)
 
@@ -19,147 +24,62 @@ helm install 5spot 5spot/5spot-controller
 
 ## Manual Deployment
 
-### 1. Create Namespace
+The shipped manifests under [`deploy/deployment/`](https://github.com/finos/5-spot/tree/main/deploy/deployment)
+are the source of truth. Apply them step-by-step:
 
 ```bash
-kubectl create namespace 5spot-system
+# 1. Namespace
+kubectl apply -f deploy/deployment/namespace.yaml
+
+# 2. RBAC — ServiceAccount, ClusterRole, ClusterRoleBinding
+kubectl apply -f deploy/deployment/rbac/
+
+# 3. Workload + supporting objects (ConfigMap, Deployment, Service,
+#    NetworkPolicy, PodDisruptionBudget)
+kubectl apply -f deploy/deployment/
 ```
 
-### 2. Apply RBAC
-
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: 5spot-controller
-  namespace: 5spot-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: 5spot-controller
-rules:
-  - apiGroups: ["5spot.finos.org"]
-    resources: ["scheduledmachines", "scheduledmachines/status"]
-    verbs: ["*"]
-  - apiGroups: ["cluster.x-k8s.io"]
-    resources: ["machines"]
-    verbs: ["*"]
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["create", "patch"]
-  # Leases for leader election
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "create", "update", "patch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: 5spot-controller
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: 5spot-controller
-subjects:
-  - kind: ServiceAccount
-    name: 5spot-controller
-    namespace: 5spot-system
-```
-
-### 3. Deploy the Controller
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: 5spot-controller
-  namespace: 5spot-system
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: 5spot-controller
-  template:
-    metadata:
-      labels:
-        app: 5spot-controller
-    spec:
-      serviceAccountName: 5spot-controller
-      containers:
-        - name: controller
-          image: ghcr.io/finos/5-spot:latest
-          env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-          ports:
-            - containerPort: 8080
-              name: metrics
-            - containerPort: 8081
-              name: health
-          resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              cpu: 500m
-              memory: 256Mi
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: health
-          readinessProbe:
-            httpGet:
-              path: /ready
-              port: health
-```
+Review the shipped files directly rather than copying YAML from these
+docs — the real manifests pin the image to a released tag, configure
+the `POD_NAME` / leader-election env vars the controller reads, set
+the correct `/healthz` and `/readyz` probe paths, and ship
+a least-privilege ClusterRole (which includes bootstrap /
+infrastructure / k0smotron / events / secrets / nodes / pods rules
+that a hand-written snippet is guaranteed to miss).
 
 ## Configuration
 
 ### Environment Variables
 
+Defaults shown match `deploy/deployment/deployment.yaml` — the shipped
+manifest turns leader election on by default.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `POD_NAME` | - | Pod name (from downward API) |
-| `POD_NAMESPACE` | - | Pod namespace (from downward API) |
-| `ENABLE_LEADER_ELECTION` | `false` | Enable leader election for HA |
+| `POD_NAME` | — | Pod name (downward API); leader-election holder identity |
+| `POD_NAMESPACE` | — | Pod namespace (downward API) |
+| `ENABLE_LEADER_ELECTION` | `true` | Enable leader election for HA |
 | `LEASE_NAME` | `5spot-leader` | Lease resource name |
 | `LEASE_DURATION_SECONDS` | `15` | Lease validity duration |
-| `METRICS_PORT` | `8080` | Prometheus metrics port |
-| `HEALTH_PORT` | `8081` | Health check port |
-| `RUST_LOG` | `info` | Log level |
+| `LEASE_RENEW_DEADLINE_SECONDS` | `10` | Leader must renew within this window |
+| `LEASE_RETRY_PERIOD_SECONDS` | `2` | Retry interval when acquiring/renewing |
+| `RUST_LOG` | `debug` | Log level (`error`/`warn`/`info`/`debug`/`trace`) |
+| `RUST_LOG_FORMAT` | `json` | `json` for SIEM ingestion, `text` for humans |
 
 ### High Availability Deployment
 
-For high availability, deploy multiple replicas with leader election:
+The shipped manifest already enables leader election. For HA, bump
+replicas (the PodDisruptionBudget guarantees at least one remains
+schedulable during voluntary disruptions):
 
-```yaml
-spec:
-  replicas: 2
-  template:
-    spec:
-      containers:
-        - name: controller
-          env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: ENABLE_LEADER_ELECTION
-              value: "true"
-            - name: LEASE_NAME
-              value: "5spot-leader"
+```bash
+kubectl scale deployment -n 5spot-system 5spot-controller --replicas=2
 ```
+
+Or edit `deploy/deployment/deployment.yaml` in your fork / overlay
+(`spec.replicas`). Do not copy a stripped-down Deployment here — it
+will lose the security context, resource limits, probes, and
+pod-anti-affinity that the shipped manifest ships with.
 
 ## Verify Deployment
 
@@ -170,9 +90,11 @@ kubectl get pods -n 5spot-system
 # Check logs
 kubectl logs -n 5spot-system -l app=5spot-controller
 
-# Check health
-kubectl port-forward -n 5spot-system svc/5spot-controller 8081:8081
-curl http://localhost:8081/health
+# Check health — the controller exposes /healthz (liveness) and
+# /readyz (readiness) on the `health` port (8081).
+kubectl port-forward -n 5spot-system svc/controller 8081:8081
+curl http://localhost:8081/healthz
+curl http://localhost:8081/readyz
 ```
 
 ## Next Steps

@@ -75,7 +75,7 @@ kubectl apply -f deploy/crds/scheduledmachine.yaml
 2. **Deploy the controller:**
 
 ```bash
-kubectl apply -f deploy/deployment/
+kubectl apply -R -f deploy/deployment/
 ```
 
 3. **Create a ScheduledMachine:**
@@ -474,6 +474,13 @@ Contributions welcome! Please:
 
 - **Gitleaks**: Pre-commit and CI secret scanning
 - **Signed Commits**: Recommended for all contributors
+- **VEX (OpenVEX)**: Every release ships a signed OpenVEX document
+  (`vex.openvex.json` + `.bundle`) that records per-CVE triage decisions
+  (`not_affected` / `affected` / `fixed` / `under_investigation`).
+  Consumers can feed it into `grype --vex` or `trivy --vex` to suppress
+  findings 5-Spot has already triaged as non-exploitable. See
+  [docs/src/security/vex.md](docs/src/security/vex.md) and
+  [`.vex/README.md`](.vex/README.md).
 
 Report security issues to the maintainers.
 

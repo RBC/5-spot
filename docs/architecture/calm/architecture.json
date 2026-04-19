@@ -429,7 +429,7 @@
 
   "controls": {
     "supply-chain-scanning": {
-      "description": "Repository is scanned by Semgrep OSS (SAST), Trivy (container image + IaC config), cargo-audit + cargo-deny (RustSec advisories, license allow-list, source restrictions), and Gitleaks (secrets); OpenSSF Scorecard publishes supply-chain posture; SPDX license identifiers on source files.",
+      "description": "Repository is scanned by Semgrep OSS (SAST), Grype (container image, VEX-aware), Trivy (IaC config), cargo-audit + cargo-deny (RustSec advisories, license allow-list, source restrictions), and Gitleaks (secrets); OpenSSF Scorecard publishes supply-chain posture; SPDX license identifiers on source files.",
       "requirements": [
         {
           "requirement-url": "https://csrc.nist.gov/pubs/sp/800/218/final",

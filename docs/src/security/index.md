@@ -18,6 +18,10 @@ Covers: CEL validation rules, deployment instructions, rollout strategy, and tes
 
 A STRIDE-based analysis of the threats facing 5-Spot and the mitigations in place. Includes trust boundaries, threat actor profiles, residual risks, and a compliance control mapping against NIST 800-53, SOX, and Basel III.
 
+### [VEX (Vulnerability Exploitability eXchange)](vex.md)
+
+How 5-Spot publishes a signed OpenVEX document with every release so downstream scanners can suppress CVEs we have already triaged as non-exploitable. Covers the `.vex/` authoring workflow, the Cosign attestation chain, and `grype --vex` / `trivy --vex` consumer usage.
+
 ---
 
 ## Security Posture at a Glance

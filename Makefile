@@ -352,10 +352,10 @@ deploy-crds: ## Deploy CRDs to cluster
 
 deploy: deploy-crds ## Deploy operator (CRDs + deployment)
 	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -f deploy/deployment/ -n $(NAMESPACE)
+	kubectl apply -R -f deploy/deployment/ -n $(NAMESPACE)
 
 undeploy: ## Remove operator from cluster
-	kubectl delete -f deploy/deployment/ -n $(NAMESPACE) || true
+	kubectl delete -R -f deploy/deployment/ -n $(NAMESPACE) || true
 	kubectl delete -f deploy/crds/ || true
 
 # ============================================================

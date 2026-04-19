@@ -187,8 +187,8 @@ async fn main() -> Result<()> {
             .filter(|g| *g > 0)
             .unwrap_or(DEFAULT_LEASE_GRACE_SECS);
 
-        let holder_id = std::env::var("CONTROLLER_POD_NAME")
-            .unwrap_or_else(|_| format!("5spot-{}", cli.instance_id));
+        let holder_id =
+            std::env::var("POD_NAME").unwrap_or_else(|_| format!("5spot-{}", cli.instance_id));
 
         info!(
             lease_name = %cli.lease_name,

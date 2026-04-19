@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+# Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: Apache-2.0
 
 # PRODUCTION DOCKERFILE - Uses pre-built binaries
@@ -14,9 +14,11 @@
 #   # Or auto-detect platform
 #   make prepare-binaries
 #
-# Base image: Google Distroless cc-debian12 (glibc, ~20MB)
+# Base image: Google Distroless cc-debian13 (glibc, ~20MB), pinned by digest
+# for supply-chain reproducibility. Dependabot (docker ecosystem) will open a
+# PR with the new digest when upstream publishes a patched image.
 
-ARG BASE_IMAGE=gcr.io/distroless/cc-debian13:nonroot
+ARG BASE_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:8f960b7fc6a5d6e28bb07f982655925d6206678bd9a6cde2ad00ddb5e2077d78
 
 FROM ${BASE_IMAGE}
 

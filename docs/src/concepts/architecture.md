@@ -301,8 +301,8 @@ flowchart LR
 
 ### Health Endpoints
 
-- `/health` - Liveness probe (port 8081)
-- `/ready` - Readiness probe (port 8081)
+- `/healthz` - Liveness probe (port 8081)
+- `/readyz` - Readiness probe (port 8081)
 
 ### Metrics
 

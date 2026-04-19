@@ -1,9 +1,14 @@
 # 5-Spot Controller Service
-# Exposes metrics endpoint for Prometheus scraping
+# Exposes metrics endpoint for Prometheus scraping.
+#
+# The Service is named `controller` (not `5spot-controller`) because Service
+# names must be valid RFC 1035 DNS labels — they cannot start with a digit.
+# The name is already scoped by the `5spot-system` namespace; DNS resolution
+# is `controller.5spot-system.svc.cluster.local`.
 apiVersion: v1
 kind: Service
 metadata:
-  name: 5spot-controller
+  name: controller
   namespace: 5spot-system
   labels:
     app: 5spot-controller

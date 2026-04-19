@@ -1,0 +1,85 @@
+# ValidatingAdmissionPolicy for the 5-Spot controller Deployment.
+#
+# Guards the controller's Deployment env block against the common ways it
+# can silently break leader election and the Kubernetes Event reporter:
+#
+#   1. POD_NAME must be set via the downward API (fieldRef: metadata.name).
+#      Without it, leader election holder_id collapses to a synthetic
+#      "5spot-<instance_id>" string and Event reports lose their instance
+#      attribution.
+#
+#   2. CONTROLLER_POD_NAME is rejected with a migration message. Pre-1.0
+#      the controller read CONTROLLER_POD_NAME; it was renamed to POD_NAME
+#      to match ecosystem convention (operator-sdk / kubebuilder /
+#      controller-runtime all use POD_NAME). This rule tells anyone still
+#      pinning the old name to update their manifest / Helm values.
+#
+# Scoped via the binding's objectSelector to only 5-spot controller
+# Deployments (label app.kubernetes.io/name=5spot,
+# app.kubernetes.io/component=controller) — it does not affect any other
+# workload in the cluster.
+#
+# Apply with:
+#   kubectl apply -f deploy/admission/controller-deployment-policy.yaml
+#   kubectl apply -f deploy/admission/controller-deployment-binding.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: 5spot-controller-deployment-validation
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: admission
+    app.kubernetes.io/managed-by: 5spot-controller
+spec:
+  # Reject the request outright; do not silently accept a broken env block.
+  failurePolicy: Fail
+
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        resources: ["deployments"]
+        operations: ["CREATE", "UPDATE"]
+
+  # CEL helper: the controller container (by name 'controller').
+  # Declared as a variable so the two validation expressions below stay
+  # compact and fail predictably when the spec shape is unexpected.
+  variables:
+    - name: controllerContainer
+      expression: |
+        object.spec.template.spec.containers.filter(c, c.name == 'controller')
+
+  validations:
+
+    # ── 1. POD_NAME must be set on the controller container ──────────────────
+    # Using .exists on the filtered list rather than indexing so we don't
+    # explode when no container is named 'controller' (the binding selector
+    # should already prevent that, but keep the expression total).
+    - expression: |
+        variables.controllerContainer.exists(c,
+          has(c.env) &&
+          c.env.exists(e, e.name == 'POD_NAME' && has(e.valueFrom) &&
+                          has(e.valueFrom.fieldRef) &&
+                          e.valueFrom.fieldRef.fieldPath == 'metadata.name'))
+      message: >-
+        5-Spot controller Deployment must set env POD_NAME via the downward API
+        (valueFrom.fieldRef.fieldPath: metadata.name). Without it, leader
+        election holder identity and Kubernetes Event reporting lose pod
+        attribution. See docs/operations/configuration.md for the required
+        env block.
+      reason: Invalid
+
+    # ── 2. CONTROLLER_POD_NAME is rejected (migration guard) ─────────────────
+    # Pre-1.0 the controller read CONTROLLER_POD_NAME; the rename to POD_NAME
+    # is breaking. Reject the old name with an actionable message so users
+    # upgrading from an older deployment see exactly what to change.
+    - expression: |
+        !variables.controllerContainer.exists(c,
+          has(c.env) && c.env.exists(e, e.name == 'CONTROLLER_POD_NAME'))
+      message: >-
+        5-Spot renamed env var CONTROLLER_POD_NAME → POD_NAME (pre-1.0
+        breaking change; aligns with operator-sdk / kubebuilder /
+        controller-runtime convention). Update your Deployment env block
+        to use `name: POD_NAME` with `valueFrom.fieldRef.fieldPath:
+        metadata.name`, then remove the CONTROLLER_POD_NAME entry.
+      reason: Invalid

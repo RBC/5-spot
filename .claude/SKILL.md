@@ -324,6 +324,12 @@ done
 - [ ] No secrets, tokens, credentials, internal hostnames, or IP addresses committed
 - [ ] No `.unwrap()` in production code
 
+### If preparing a release:
+- [ ] Every open Trivy finding has a corresponding statement in `.vex/` (triaged into one of: `not_affected`, `affected`, `fixed`, `under_investigation`). No silent "unknown" CVEs leave the door.
+- [ ] `./tools/validate-vex.sh` exits 0.
+- [ ] `./tools/tests/validate-vex-tests.sh` and `./tools/tests/assemble-openvex-tests.sh` pass.
+- [ ] `.vex/` changes referenced in the release notes / changelog.
+
 **Verification:** Every checked box above passes. A task is NOT complete until the full checklist is green.
 
 ---

@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+# Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: Apache-2.0
 
 # CHAINGUARD PRODUCTION DOCKERFILE - Uses pre-built binaries
@@ -26,7 +26,10 @@
 # - ~20MB image size (glibc binary)
 # - Non-root by default
 
-ARG BASE_IMAGE=cgr.dev/chainguard/glibc-dynamic:latest
+# Pinned by digest (Trivy DS-0001). Chainguard rebuilds this tag daily with
+# patches; Dependabot (docker ecosystem) opens a PR with the new digest on
+# each rebuild, which we review and merge. Do NOT revert to a floating tag.
+ARG BASE_IMAGE=cgr.dev/chainguard/glibc-dynamic:latest@sha256:fa0d07a6a352921b778c4da11d889b41d9ef8e99c69bc2ec1f8c9ec46b2462e9
 
 FROM ${BASE_IMAGE}
 

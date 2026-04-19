@@ -9,6 +9,122 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-19 20:15] - Rename Service to `controller` (RFC 1035 compliance)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/deployment/service.yaml`: Renamed `metadata.name` from `5spot-controller` to `controller`. Kubernetes Services require **RFC 1035** DNS labels (`[a-z]([-a-z0-9]*[a-z0-9])?`) — stricter than the RFC 1123 rule used by Namespace/Deployment/ConfigMap/RBAC — and labels must start with a letter, not a digit. The cluster API server rejects `5spot-controller` with `metadata.name: Invalid value: "5spot-controller": a DNS-1035 label…`. Added a header comment explaining the constraint so nobody renames it back.
+- `docs/src/installation/controller.md`: Updated the port-forward example from `svc/5spot-controller` to `svc/controller`.
+
+### Why
+`kubectl apply --dry-run=client` did not catch this — client-side dry-run skips the Service-specific admission validator. Only `--dry-run=server` (or an actual apply) surfaces the RFC 1035 rule. Renaming to `controller` is safe here because the Service is already scoped by the `5spot-system` namespace; cluster DNS resolves it as `controller.5spot-system.svc.cluster.local`. The ServiceMonitor selector matches on label `app: 5spot-controller` (not on Service name), so monitoring continues to work without change.
+
+### Audit: every other kube resource name
+
+Server-side validated against a live cluster — all resources other than the Service were already compliant. Kubernetes applies different name rules per kind; this matrix confirms each one:
+
+| Kind | Name | Rule | Result |
+|---|---|---|---|
+| Namespace | `5spot-system` | RFC 1123 label (digit-start OK) | ✅ |
+| ConfigMap | `5spot-controller-config` | RFC 1123 subdomain | ✅ |
+| Deployment | `5spot-controller` | RFC 1123 subdomain | ✅ |
+| Service | `controller` | **RFC 1035 label** (letter-start required) | ✅ (renamed) |
+| NetworkPolicy | `5spot-controller` | RFC 1123 subdomain | ✅ |
+| PodDisruptionBudget | `5spot-controller` | RFC 1123 subdomain | ✅ |
+| ClusterRole | `5spot-controller` | RFC 1123 subdomain | ✅ |
+| ClusterRoleBinding | `5spot-controller` | RFC 1123 subdomain | ✅ |
+| ServiceAccount | `5spot-controller` | RFC 1123 subdomain | ✅ |
+| ServiceMonitor | `5spot-controller` | CR default = RFC 1123 subdomain | ✅ |
+| CustomResourceDefinition | `scheduledmachines.5spot.finos.org` | `<plural>.<group>`, each label RFC 1123 (digit-start OK) | ✅ |
+| ValidatingAdmissionPolicy | `scheduledmachine-validation` | RFC 1123 subdomain | ✅ |
+| ValidatingAdmissionPolicyBinding | `scheduledmachine-validation-binding` | RFC 1123 subdomain | ✅ |
+| ScheduledMachine | `business-hours-worker`, `weekend-worker` | RFC 1123 subdomain | ✅ |
+
+### Unrelated issue surfaced during validation
+`examples/scheduledmachine-weekend.yaml` fails server-side admission with `unknown field "spec.schedule.cron"` — the example is out of date against the current CRD schema (which uses day/hour ranges, not cron expressions). Tracked separately; not fixed in this commit.
+
+### Impact
+- [x] Breaking change (anyone referencing `5spot-controller.5spot-system.svc.cluster.local` — e.g. in ServiceMonitor `endpoints[*].port` lookups by Service name, Ingress backends, or custom dashboards — must use `controller.5spot-system.svc.cluster.local`)
+- [x] Requires cluster rollout (old Service object must be `kubectl delete`d; the new one will be created on re-apply)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-04-19 19:45] - Resolve Trivy IaC findings in GitHub Code Scanning
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/deployment/deployment.yaml`:
+  - Replaced `image: ghcr.io/RBC/5-spot:latest` with `image: ghcr.io/finos/5-spot:v0.1.0` (Trivy **KSV-0013** — image `:latest` tag; also removes a stale RBC-internal reference that violated the CLAUDE.md internal-references rule and pointed at a non-existent org).
+  - Added `seccompProfile: { type: RuntimeDefault }` at both the pod `spec.securityContext` and the container `securityContext` (Trivy **KSV-0104** — seccomp policies disabled, **KSV-0030** — runtime/default seccomp profile not set).
+  - Added `runAsGroup: 65534` to the container `securityContext` (Trivy **KSV-0021** — runs with low GID; 65534 is the `nogroup`/`nobody` GID on distroless and Chainguard images).
+- `Dockerfile`:
+  - Removed "RBC Capital Markets" from the copyright header (CLAUDE.md internal-references rule).
+  - Pinned the distroless base image by digest: `gcr.io/distroless/cc-debian13:nonroot@sha256:8f960b7fc6a5d6e28bb07f982655925d6206678bd9a6cde2ad00ddb5e2077d78`. Dependabot (docker ecosystem) will open a re-pin PR when Google publishes a patched image.
+- `Dockerfile.chainguard`:
+  - Removed "RBC Capital Markets" from the copyright header.
+  - Pinned the Chainguard glibc-dynamic base image by digest: `cgr.dev/chainguard/glibc-dynamic:latest@sha256:fa0d07a6a352921b778c4da11d889b41d9ef8e99c69bc2ec1f8c9ec46b2462e9` (Trivy **DS-0001** — `:latest` tag used). Chainguard rebuilds this tag daily with security patches and Dependabot picks up the new digest on each rebuild.
+- `.trivyignore` (new): Six architecturally-justified suppressions, each with a written rationale so an auditor can answer "why is this ignored" without reading code:
+  - `AVD-KSV-0046` — RBAC wildcard on `bootstrap.cluster.x-k8s.io` and `infrastructure.cluster.x-k8s.io` API groups is required by the provider-agnostic design (controller must support any CAPI provider installed in the cluster).
+  - `AVD-KSV-0048` — Pod/eviction permissions are required for node drain during machine shutdown.
+  - `AVD-KSV-0041` — Secret access is **read-only** (get/list/watch), required to resolve SSH keys and bootstrap-data references.
+  - `AVD-KSV-0125` — Registry allow-listing is a cluster-level admission policy (Kyverno / OPA / VAP), not a workload field.
+  - `AVD-KSV-01010` — ConfigMap "sensitive content" finding is a false positive; the ConfigMap holds only log-level strings and port numbers.
+  - `AVD-DS-0026` — Kubernetes uses `livenessProbe`/`readinessProbe` on `:8081` for health; Dockerfile `HEALTHCHECK` would be dead code, and distroless/Chainguard have no shell to run one.
+- `.github/workflows/build.yaml`: `Run Trivy config scan` step now explicitly passes `trivyignores: ./.trivyignore` so the suppressions apply deterministically in CI (Trivy auto-discovers the file by default, but the explicit path documents intent and survives future action-version bumps).
+
+### Why
+GitHub Code Scanning was showing 10 open Trivy IaC findings against 5-Spot's deploy manifests and Dockerfiles, including two **error-severity KSV-0046** alerts. Most were real hardening gaps (seccomp, low GID, `:latest` tags, stale RBC image path); a handful (CAPI wildcards, pod eviction, read-only secret access) are load-bearing architectural choices that belong in an explicit suppression list with written justification rather than being fixed away. A local `trivy config` run after the changes now reports **0 misconfigurations** across all 17 scanned files. Separately, this fixes two CLAUDE.md policy violations — the `ghcr.io/RBC/5-spot` image reference and the "RBC Capital Markets" copyright headers — that had been quietly sitting in the tree.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (deployment.yaml securityContext + image tag change)
+- [x] Config change only (Dockerfile digest pins, `.trivyignore`, CI workflow input)
+- [ ] Documentation only
+
+### Operational note
+The deployment image is now pinned to `v0.1.0` — the current latest GitHub release. When a new release is cut, either edit `deploy/deployment/deployment.yaml` or override the tag via your kustomize/Helm overlay. Do **not** revert to `:latest`.
+
+---
+
+## [2026-04-19 18:00] - Add OpenVEX generation, validation, and signing pipeline
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.vex/README.md` (new), `.vex/.gitkeep` (new): repository convention for hand-authored per-CVE triage. One TOML file per CVE with `status`, `justification` (enum), `products`, `author`, and `timestamp`. Documents the workflow, the allowed enum values, and what is required per status (`not_affected` → justification; `affected`/`under_investigation` → `action_statement`).
+- `tools/validate-vex.sh` (new), `tools/validate_vex.py` (new): shell + Python (`tomllib`, stdlib) validator. Checks per-file schema, enum membership (status, justification), non-empty `products`, RFC-3339 UTC timestamp, and CVE uniqueness across files. Deterministic error output.
+- `tools/assemble_openvex.py` (new): assembler that reads `.vex/*.toml` and emits a single OpenVEX v0.2.0 JSON document with a canonical `@id`. Runs `validate_dir` first so malformed input never yields a document. Normalizes TOML datetimes to RFC-3339 UTC `Z`-suffix strings, sorts keys for diffable output.
+- `tools/tests/validate-vex-tests.sh` + 18 fixture dirs: 19 cases covering every positive/negative/exception branch (empty dir, missing dir, missing each required field, malformed TOML, bad CVE format, invalid status/justification, empty products, bad timestamp, missing-justification-when-required, missing-action-statement-when-required, duplicate CVE across files, valid-single / valid-multiple / valid-affected).
+- `tools/tests/assemble-openvex-tests.sh`: 6 cases covering happy path (file + stdout), JSON validity, validator-gate negative path, CLI argument errors, default-timestamp RFC-3339 shape.
+- `.github/workflows/build.yaml`:
+  - Added `.vex/**` and `tools/**` to the PR `paths:` filter so changes to either directory trigger the workflow.
+  - New PR-only `validate-vex` job runs the validator unit tests and then validates the live `.vex/` directory. Gates PRs touching `.vex/**` or `tools/**`.
+  - New release-only `build-vex` job (`needs: [docker, extract-version]`): defensively re-runs the validator, calls `assemble_openvex.py` with a canonical `@id = https://github.com/<repo>/releases/tag/<tag>/vex`, installs pinned `vexctl` and runs `vexctl validate` as a second-opinion check, Cosign-attests the document to both image digests (`cosign attest --type openvex` for Chainguard + Distroless), runs `actions/attest-build-provenance` on the document, and uploads `vex.openvex.json` + `.bundle` as a workflow artifact.
+  - `upload-release-assets` now `needs: build-vex`, downloads the `openvex` artifact, copies the document to `release/` and the attestation bundle to `signatures/`, includes both in `checksums.sha256`, and publishes the document as a release asset.
+- `docs/src/security/vex.md` (new): user-facing page covering what VEX is, what gets published, how to verify (Cosign + `gh attestation verify`), how to consume (`grype --vex`, `trivy --vex`), and how maintainers add statements. Linked from `docs/src/security/index.md` and `docs/mkdocs.yml` nav.
+- `README.md`: Security section now lists OpenVEX under the publication surface with links to `docs/src/security/vex.md` and `.vex/README.md`.
+- `.claude/SKILL.md`: `pre-commit-checklist` skill gains a "If preparing a release" block requiring every open Trivy finding to have a statement in `.vex/`, plus explicit commands for the validator and the two test scripts.
+
+### Why
+Without VEX, every Trivy CVE surfaced on 5-Spot images re-triages itself at every downstream consumer. Publishing a signed OpenVEX document once — per release, bound to image digests via Cosign, attached to the GitHub Release — pushes the triage decision to exactly one place (`.vex/<cve>.toml`, PR-reviewed) and lets scanners (Grype, Trivy, Harbor) suppress already-triaged findings without repeating the analysis. Keeps 5-Spot honest: only human-authored statements ship, and CI won't emit a document from a malformed source tree.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CI/CD workflow + new repo convention)
+- [ ] Documentation only
+
+### Operational note
+- **vexctl pin:** `build-vex` installs vexctl by downloading a tagged release tarball (`VEXCTL_VERSION: '0.3.0'`). Per the roadmap's "Dependencies to pin" section this should be replaced with SHA-pinned asset verification (`cosign verify-blob`) before the first release actually flows through this workflow; re-pin quarterly with the rest of the signing toolchain.
+- **First release after merge:** add at least one hand-authored statement in `.vex/` (even `under_investigation` on a known low-severity CVE) so the signing chain is exercised end-to-end and the release contains a non-empty `vex.openvex.json`.
+- **Phase 4 of the roadmap (CycloneDX-VEX co-emission) is intentionally deferred** — kept gated behind an explicit consumer ask per the roadmap's decision gate. Phases 1/2/3/5 are now in place.
+
+---
+
 ## [2026-04-19 17:15] - Add Dependabot config for Actions, Cargo, and Docker
 
 **Author:** Erick Bourgeois

@@ -18,9 +18,20 @@ kubectl apply -f https://raw.githubusercontent.com/finos/5-spot/main/deploy/crds
 
 ### 2. Deploy the Operator
 
+The operator manifests live in multiple files across `deploy/deployment/`
+(including a `rbac/` subdirectory), so clone the repo and apply
+recursively:
+
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/finos/5-spot/main/deploy/deployment/
+git clone --depth=1 https://github.com/finos/5-spot.git
+cd 5-spot
+kubectl apply -R -f deploy/deployment/
 ```
+
+The `-R` (recursive) flag is required so the ServiceAccount,
+ClusterRole, and ClusterRoleBinding under `deploy/deployment/rbac/` are
+applied. Without it the Deployment is created but cannot schedule pods
+(`serviceaccount "5spot-controller" not found`).
 
 ### 3. Verify Installation
 

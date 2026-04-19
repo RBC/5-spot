@@ -21,7 +21,7 @@ LEASE_NAME=5spot-leader               # Name of the Lease resource
 LEASE_DURATION_SECONDS=15             # Lease validity duration
 LEASE_RENEW_DEADLINE_SECONDS=10       # Time to renew before giving up
 LEASE_RETRY_PERIOD_SECONDS=2          # Retry interval for acquiring lease
-POD_NAME=<pod-name>                   # Injected from downward API
+POD_NAME=<pod-name>                   # Injected from downward API — leader holder identity
 POD_NAMESPACE=<namespace>             # Injected from downward API
 ```
 
@@ -48,7 +48,7 @@ spec:
       serviceAccountName: 5spot-controller
       containers:
         - name: controller
-          image: ghcr.io/finos/5spot-rs:latest
+          image: ghcr.io/finos/5-spot:v0.1.0   # pin to a released tag; never :latest
           env:
             - name: POD_NAME
               valueFrom:

@@ -12,7 +12,7 @@
 | `HEALTH_PORT` | `8081` | Port for health check endpoints |
 | `RUST_LOG` | `info` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
 | `RUST_LOG_FORMAT` | `json` | Log format: `json` (production/SIEM) or `text` (local dev) |
-| `CONTROLLER_POD_NAME` | _(injected)_ | Pod name injected via `fieldRef`; used as the leader election holder identity and Kubernetes Event reporter |
+| `POD_NAME` | _(injected)_ | Pod name injected via `fieldRef` (downward API); used as the leader-election holder identity and Kubernetes Event reporter |
 | `ENABLE_LEADER_ELECTION` | `false` | Enable Kubernetes Lease-based leader election for multi-replica HA |
 | `LEASE_NAME` | `5spot-leader` | Name of the Kubernetes `Lease` resource used for leader election |
 | `POD_NAMESPACE` | `5spot-system` | Namespace in which to create the leader election `Lease` (injected via `fieldRef`) |
@@ -105,7 +105,7 @@ spec:
             - configMapRef:
                 name: 5spot-config
           env:
-            - name: CONTROLLER_POD_NAME
+            - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name

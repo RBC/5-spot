@@ -1,0 +1,36 @@
+# ValidatingAdmissionPolicyBinding — activates the
+# 5spot-controller-deployment-validation policy, scoped ONLY to Deployments
+# that carry the 5-Spot controller labels.
+#
+# This is a deliberately narrow objectSelector: without it the policy would
+# evaluate every Deployment in the cluster and reject any that happened to
+# set CONTROLLER_POD_NAME for unrelated reasons.
+#
+# Apply after the ValidatingAdmissionPolicy:
+#   kubectl apply -f deploy/admission/controller-deployment-policy.yaml
+#   kubectl apply -f deploy/admission/controller-deployment-binding.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: 5spot-controller-deployment-validation-binding
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: admission
+    app.kubernetes.io/managed-by: 5spot-controller
+spec:
+  policyName: 5spot-controller-deployment-validation
+
+  # Deny rejects the request with HTTP 422; switch to [Audit] during
+  # rollout to log without blocking.
+  validationActions: [Deny]
+
+  matchResources:
+    # Scope to the controller Deployment only — evaluated on every Deployment
+    # admission request, but CEL only runs for matches.
+    objectSelector:
+      matchLabels:
+        app.kubernetes.io/name: 5spot
+        app.kubernetes.io/component: controller
+    # No namespace restriction — operators commonly install the controller
+    # to 5spot-system but the label selector is what narrows the match.
+    namespaceSelector: {}

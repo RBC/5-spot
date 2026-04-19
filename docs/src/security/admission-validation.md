@@ -176,12 +176,22 @@ For Kubernetes 1.26–1.27, enable the feature gate on the API server:
 
 ### Apply the manifests
 
-The policy and binding are two separate resources in `deploy/admission/`.
-Apply the policy first, then the binding:
+`deploy/admission/` ships two policies, each with its own binding:
+
+- `validatingadmissionpolicy*.yaml` — validates `ScheduledMachine` CRs.
+- `controller-deployment-policy.yaml` + `controller-deployment-binding.yaml`
+  — validates the controller's own `Deployment`, enforcing that
+  `POD_NAME` is set via downward API and rejecting the deprecated
+  `CONTROLLER_POD_NAME` env var with a migration message.
+
+Apply each policy before its binding (order matters — the binding
+references the policy by name):
 
 ```bash
 kubectl apply -f deploy/admission/validatingadmissionpolicy.yaml
 kubectl apply -f deploy/admission/validatingadmissionpolicybinding.yaml
+kubectl apply -f deploy/admission/controller-deployment-policy.yaml
+kubectl apply -f deploy/admission/controller-deployment-binding.yaml
 ```
 
 ### Verify the policy is active

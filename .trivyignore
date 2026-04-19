@@ -1,0 +1,76 @@
+# Trivy ignore list — 5-Spot Machine Scheduler
+#
+# Each entry is a Trivy rule ID followed by a short justification. We only
+# suppress findings where the flagged behaviour is a deliberate architectural
+# choice; every other finding is expected to be fixed in code/config.
+#
+# Review cadence: audit this file on every major release. If a provider-
+# agnostic RBAC rule can be tightened, tighten it instead of extending this
+# list. Do not add new entries without a written justification.
+#
+# Docs: https://aquasecurity.github.io/trivy/latest/docs/configuration/filtering/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RBAC — deploy/deployment/rbac/clusterrole.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# KSV-0046 — ClusterRole manages all resources in an API group.
+# The controller is provider-agnostic by design: it must create and delete
+# any CAPI bootstrap- or infrastructure-provider custom resource the cluster
+# operator installs (k0smotron, AWS, Azure, vSphere, Metal3, …). Enumerating
+# every known provider's resources would make the manifest fragile and would
+# silently break when a new provider is installed. The wildcard is scoped to
+# the two dedicated CAPI API groups (bootstrap.cluster.x-k8s.io and
+# infrastructure.cluster.x-k8s.io) — it does NOT grant access to core/v1 or
+# to arbitrary groups.
+AVD-KSV-0046
+
+# KSV-0048 — ClusterRole can manage Kubernetes workloads and pods.
+# Required for node drain: the controller issues pod eviction requests
+# (pods/eviction: create) and deletes pods that refuse eviction during
+# machine shutdown. Scoping is already minimal — get/list/watch/delete on
+# pods, create on pods/eviction — and is a standard pattern for CAPI-style
+# controllers that manage node lifecycle.
+AVD-KSV-0048
+
+# KSV-0041 — ClusterRole can manage secrets.
+# Access is READ-ONLY (get/list/watch). The controller resolves SSH key
+# Secrets and bootstrap-data Secrets referenced by ScheduledMachine specs;
+# it never creates, mutates, or deletes secret material. Tightening further
+# would require a per-namespace Role + RoleBinding per provider Secret,
+# which is impractical for a cluster-wide controller.
+AVD-KSV-0041
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Deployment — deploy/deployment/deployment.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# KSV-0125 — Restrict container images to trusted registries.
+# This is a cluster-level admission policy (Kyverno / OPA Gatekeeper /
+# ValidatingAdmissionPolicy), not a workload-level field. We document the
+# canonical image registry (ghcr.io/finos/5-spot) in docs/installation and
+# leave registry allow-listing to the operator's cluster policy stack.
+AVD-KSV-0125
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ConfigMap — deploy/deployment/configmap.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# KSV-01010 — ConfigMap with sensitive content.
+# False positive. The ConfigMap contains only log-level strings and port
+# numbers (RUST_LOG, RUST_LOG_FORMAT, METRICS_PORT, HEALTH_PORT). The
+# controller reads no credential, token, or private-key material from
+# ConfigMaps — all sensitive material is sourced from Secrets.
+AVD-KSV-01010
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dockerfile — Dockerfile, Dockerfile.chainguard
+# ─────────────────────────────────────────────────────────────────────────────
+
+# DS-0026 — No HEALTHCHECK defined.
+# Kubernetes uses livenessProbe and readinessProbe on /healthz and /readyz
+# (port 8081), configured in deploy/deployment/deployment.yaml. HEALTHCHECK
+# in the Dockerfile would be dead code in the cluster path, and our
+# distroless / Chainguard base images do not ship curl or wget, so the
+# check cannot be a simple shell one-liner. Runtime health is authoritative.
+AVD-DS-0026
