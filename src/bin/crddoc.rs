@@ -208,4 +208,28 @@ fn main() {
     println!("#### observedGeneration");
     println!();
     println!("(integer) The generation observed by the controller. Used for change detection.");
+    println!();
+    println!("#### providerID");
+    println!();
+    println!(
+        "(optional, string) Provider-assigned machine identifier, copied from the CAPI Machine's"
+    );
+    println!(
+        "`spec.providerID`. Stable for the life of the machine and unique across the cluster."
+    );
+    println!("Examples: `libvirt:///uuid-abc-123`, `aws:///us-east-1a/i-0abcd1234`.");
+    println!();
+    println!("#### nodeRef");
+    println!();
+    println!(
+        "(optional, object) Reference to the Kubernetes Node once the Machine is provisioned."
+    );
+    println!("Mirrors the shape of CAPI's `Machine.status.nodeRef`:");
+    println!();
+    println!(
+        "- **apiVersion** (required, string): API version of the Node resource (typically `v1`)"
+    );
+    println!("- **kind** (required, string): Kind of the referenced object (typically `Node`)");
+    println!("- **name** (required, string): Name of the Node");
+    println!("- **uid** (optional, string): UID of the Node, protecting against name reuse");
 }

@@ -9,6 +9,28 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-16 17:00] - Phase 1: Enrich ScheduledMachine status with providerID and full nodeRef
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: Added `provider_id: Option<String>` (serialized as `providerID`) to `ScheduledMachineStatus`. Replaced the thin `LocalObjectReference { name }` node reference with a new `NodeRef { apiVersion, kind, name, uid }` struct mirroring CAPI's `Machine.status.nodeRef`. Removed the now-unused `LocalObjectReference` type.
+- `src/crd_tests.rs`: Added 6 TDD cases covering providerID round-trip, full `nodeRef` deserialization, optional `uid`, serialization omission, old-shape rejection, and `NodeRef` round-trip.
+- `src/bin/crddoc.rs`: Documented new `providerID` and `nodeRef` status fields.
+- `deploy/crds/scheduledmachine.yaml`: Regenerated from the updated Rust types.
+- `docs/reference/api.md`: Regenerated to reflect new status schema.
+
+### Why
+Phase 1 of the event-driven watches + status enrichment roadmap. Surfacing `providerID` and a full Node reference (with UID) on `ScheduledMachine.status` lets operators correlate a scheduled machine to a specific VM and Node from `kubectl get sm -o jsonpath=...`, without manual lookups across CAPI Machines and the Node API. This is the schema foundation that Phase 2 (reconciler populates the fields) and Phases 3–4 (event-driven watches on CAPI Machine and Node) build upon.
+
+### Impact
+- [x] Breaking change — `status.nodeRef` shape changed from `{ name }` to `{ apiVersion, kind, name, uid }`. Existing CRs with the old shape must clear `status.nodeRef` before rollout, or the controller will report deserialization errors on that field.
+- [x] Requires cluster rollout — CRD must be re-applied alongside the new controller image.
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-04-17] - Bump base image to cc-debian13 and fix GLIBC_2.39 crash (issue #17)
 
 **Author:** Daniel Guns

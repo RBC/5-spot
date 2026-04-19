@@ -132,7 +132,8 @@ The status subresource contains the current state:
 | `machineRef` | `ObjectReference` | Reference to created CAPI Machine |
 | `bootstrapRef` | `ObjectReference` | Reference to created bootstrap resource |
 | `infrastructureRef` | `ObjectReference` | Reference to created infrastructure resource |
-| `nodeRef` | `LocalObjectReference` | Reference to the Kubernetes Node (once provisioned) |
+| `nodeRef` | `NodeRef` | Reference to the Kubernetes Node (apiVersion, kind, name, uid) once provisioned |
+| `providerID` | `string` | Provider-assigned machine identifier (copied from CAPI `Machine.spec.providerID`) |
 | `lastScheduledTime` | `Time` | Last time machine was created |
 | `nextActivation` | `Time` | Next scheduled activation time |
 | `nextCleanup` | `Time` | Time when machine will be cleaned up |

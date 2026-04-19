@@ -1,6 +1,3 @@
-   Compiling five_spot v0.1.0 (/Users/erick/dev/5-spot)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.57s
-     Running `target/debug/crdgen`
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -286,13 +283,27 @@ spec:
                 nullable: true
                 type: string
               nodeRef:
-                description: Reference to the Kubernetes Node (once provisioned)
+                description: |-
+                  Reference to the Kubernetes Node (once provisioned), mirroring the
+                  shape of CAPI's `Machine.status.nodeRef`.
                 nullable: true
                 properties:
+                  apiVersion:
+                    description: API version of the Node resource (typically `"v1"`)
+                    type: string
+                  kind:
+                    description: Kind of the referenced object (typically `"Node"`)
+                    type: string
                   name:
-                    description: Name of the referenced object
+                    description: Name of the Node
+                    type: string
+                  uid:
+                    description: UID of the Node, protecting against name reuse
+                    nullable: true
                     type: string
                 required:
+                - apiVersion
+                - kind
                 - name
                 type: object
               observedGeneration:
@@ -304,6 +315,13 @@ spec:
                 description: |-
                   Current phase of the machine lifecycle
                   Values: Pending, Active, `ShuttingDown`, Inactive, Disabled, Terminated, Error
+                nullable: true
+                type: string
+              providerID:
+                description: |-
+                  Provider-assigned machine identifier, copied from the CAPI
+                  `Machine.spec.providerID`. Stable for the life of the machine and
+                  unique across the cluster.
                 nullable: true
                 type: string
             type: object

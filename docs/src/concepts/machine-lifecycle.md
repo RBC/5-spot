@@ -163,7 +163,11 @@ status:
     name: business-hours-worker-infra
     namespace: default
   nodeRef:
+    apiVersion: v1
+    kind: Node
     name: worker-node-01
+    uid: 11111111-2222-3333-4444-555555555555
+  providerID: libvirt:///uuid-abc-123
   conditions:
     - type: Ready
       status: "True"

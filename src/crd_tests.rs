@@ -330,4 +330,106 @@ mod tests {
         let c = Condition::new("Ready", "True", "ReconcileSucceeded", "ok");
         assert_eq!(c.status, "True");
     }
+
+    // ========================================================================
+    // Status enrichment — providerID + full NodeRef (roadmap Phase 1, TDD RED)
+    // ========================================================================
+
+    #[test]
+    fn test_status_deserializes_provider_id() {
+        let json = serde_json::json!({
+            "providerID": "libvirt:///uuid-abc-123",
+        });
+        let status: ScheduledMachineStatus =
+            serde_json::from_value(json).expect("status with providerID must deserialize");
+        assert_eq!(
+            status.provider_id.as_deref(),
+            Some("libvirt:///uuid-abc-123"),
+            "providerID must round-trip into ScheduledMachineStatus.provider_id"
+        );
+    }
+
+    #[test]
+    fn test_status_provider_id_omitted_when_none() {
+        let status = ScheduledMachineStatus::default();
+        let json = serde_json::to_value(&status).expect("serialize default status");
+        assert!(
+            json.get("providerID").is_none(),
+            "providerID must be omitted when None (skip_serializing_if)"
+        );
+    }
+
+    #[test]
+    fn test_status_deserializes_full_node_ref() {
+        let json = serde_json::json!({
+            "nodeRef": {
+                "apiVersion": "v1",
+                "kind": "Node",
+                "name": "worker-01",
+                "uid": "11111111-2222-3333-4444-555555555555",
+            }
+        });
+        let status: ScheduledMachineStatus =
+            serde_json::from_value(json).expect("status with full nodeRef must deserialize");
+        let node_ref = status.node_ref.expect("nodeRef must be present");
+        assert_eq!(node_ref.api_version, "v1");
+        assert_eq!(node_ref.kind, "Node");
+        assert_eq!(node_ref.name, "worker-01");
+        assert_eq!(
+            node_ref.uid.as_deref(),
+            Some("11111111-2222-3333-4444-555555555555")
+        );
+    }
+
+    #[test]
+    fn test_status_node_ref_uid_optional() {
+        let json = serde_json::json!({
+            "nodeRef": {
+                "apiVersion": "v1",
+                "kind": "Node",
+                "name": "worker-02",
+            }
+        });
+        let status: ScheduledMachineStatus =
+            serde_json::from_value(json).expect("nodeRef without uid must still deserialize");
+        let node_ref = status.node_ref.expect("nodeRef must be present");
+        assert_eq!(node_ref.name, "worker-02");
+        assert!(node_ref.uid.is_none());
+    }
+
+    #[test]
+    fn test_status_rejects_old_shape_node_ref() {
+        // Old shape was LocalObjectReference { name }. Deserializing that into
+        // the new NodeRef struct must fail loudly so operators see the migration
+        // requirement — silent data loss is unacceptable.
+        let json = serde_json::json!({
+            "nodeRef": { "name": "worker-legacy" }
+        });
+        let err = serde_json::from_value::<ScheduledMachineStatus>(json)
+            .expect_err("old-shape nodeRef must NOT silently succeed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("apiVersion") || msg.contains("kind"),
+            "error must name a missing field so operators know what changed, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_node_ref_round_trip_serialization() {
+        let original = NodeRef {
+            api_version: "v1".to_string(),
+            kind: "Node".to_string(),
+            name: "worker-03".to_string(),
+            uid: Some("aaaa-bbbb".to_string()),
+        };
+        let json = serde_json::to_value(&original).expect("serialize NodeRef");
+        assert_eq!(json["apiVersion"], "v1");
+        assert_eq!(json["kind"], "Node");
+        assert_eq!(json["name"], "worker-03");
+        assert_eq!(json["uid"], "aaaa-bbbb");
+
+        let round: NodeRef = serde_json::from_value(json).expect("round-trip NodeRef");
+        assert_eq!(round.api_version, "v1");
+        assert_eq!(round.uid.as_deref(), Some("aaaa-bbbb"));
+    }
 }

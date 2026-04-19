@@ -251,7 +251,7 @@ pub struct MachineTemplateSpec {
 }
 
 // ============================================================================
-// LocalObjectReference - Reference to a resource in a namespace
+// ObjectReference / NodeRef - References to Kubernetes objects
 // ============================================================================
 
 /// Reference to a Kubernetes object with apiVersion, kind, name, namespace
@@ -272,12 +272,26 @@ pub struct ObjectReference {
     pub namespace: Option<String>,
 }
 
-/// Simple reference to a resource by name only (same namespace assumed)
+/// Reference to a Kubernetes Node with apiVersion/kind/name and optional UID.
+///
+/// Mirrors the shape of `Machine.status.nodeRef` in CAPI, giving operators
+/// enough identity to correlate a `ScheduledMachine` with a specific Node
+/// object (UID protects against node-name reuse).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct LocalObjectReference {
-    /// Name of the referenced object
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NodeRef {
+    /// API version of the Node resource (typically `"v1"`)
+    pub api_version: String,
+
+    /// Kind of the referenced object (typically `"Node"`)
+    pub kind: String,
+
+    /// Name of the Node
     pub name: String,
+
+    /// UID of the Node, protecting against name reuse
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
 }
 
 // ============================================================================
@@ -312,9 +326,20 @@ pub struct ScheduledMachineStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub infrastructure_ref: Option<ObjectReference>,
 
-    /// Reference to the Kubernetes Node (once provisioned)
+    /// Reference to the Kubernetes Node (once provisioned), mirroring the
+    /// shape of CAPI's `Machine.status.nodeRef`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_ref: Option<LocalObjectReference>,
+    pub node_ref: Option<NodeRef>,
+
+    /// Provider-assigned machine identifier, copied from the CAPI
+    /// `Machine.spec.providerID`. Stable for the life of the machine and
+    /// unique across the cluster.
+    #[serde(
+        rename = "providerID",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub provider_id: Option<String>,
 
     /// Standard Kubernetes conditions
     #[serde(default)]
