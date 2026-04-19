@@ -17,29 +17,37 @@ automatically added to and removed from a k0smotron cluster based on a time sche
 apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
-  name: example-machine
+  name: example-spot-machine
   namespace: default
 spec:
+  clusterName: my-cluster
   schedule:
     daysOfWeek:
       - mon-fri
     hoursOfDay:
-      - "9-17"
+      - 9-17
     timezone: America/New_York
     enabled: true
-  clusterName: my-cluster
   bootstrapSpec:
     apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
     kind: K0sWorkerConfig
     spec:
-      version: v1.30.0+k0s.0
+      version: v1.32.8+k0s.0
+      downloadURL: https://github.com/k0sproject/k0s/releases/download/v1.32.8+k0s.0/k0s-v1.32.8+k0s.0-amd64
   infrastructureSpec:
     apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
     kind: RemoteMachine
     spec:
       address: 192.168.1.100
       port: 22
-      user: admin
+      user: root
+      sshKeyRef:
+        name: my-ssh-key
+  machineTemplate:
+    labels:
+      node-role.kubernetes.io/worker: spot
+    annotations:
+      example.com/scheduled-by: 5spot
   priority: 50
   gracefulShutdownTimeout: 5m
   nodeDrainTimeout: 5m
@@ -52,18 +60,16 @@ spec:
 
 Machine scheduling configuration.
 
-- **daysOfWeek** (optional, array of strings, default: `[]`): Days when machine should be active.
+- **daysOfWeek** (required, array of strings): Days when machine should be active.
   Supports ranges (`mon-fri`) and combinations (`mon-wed,fri-sun`).
 
-- **hoursOfDay** (optional, array of strings, default: `[]`): Hours when machine should be active (0-23).
+- **hoursOfDay** (required, array of strings): Hours when machine should be active (0-23).
   Supports ranges (`9-17`) and combinations (`0-9,18-23`).
 
 - **timezone** (optional, string, default: `UTC`): Timezone for the schedule.
   Must be a valid IANA timezone (e.g., `America/New_York`, `Europe/London`).
 
-- **enabled** (optional, boolean, default: `true`): Whether the schedule is active.
-
-*At least one of `daysOfWeek` or `hoursOfDay` must be non-empty.*
+- **enabled** (optional, boolean, default: `true`): Whether the schedule is enabled.
 
 #### clusterName
 
@@ -71,44 +77,38 @@ Machine scheduling configuration.
 
 #### bootstrapSpec
 
-(required, object) Inline bootstrap configuration. 5-Spot creates this resource when the
-schedule window opens. The `apiVersion`, `kind`, and `spec` map directly to the
-bootstrap provider's resource type (e.g., `K0sWorkerConfig`).
+(required, object) Inline bootstrap configuration that will be created when the schedule is active.
+This is a fully unstructured object that must contain:
 
-```yaml
-bootstrapSpec:
-  apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
-  kind: K0sWorkerConfig
-  spec:
-    version: v1.30.0+k0s.0
-```
+- **apiVersion** (required, string): API version of the bootstrap resource (e.g., `bootstrap.cluster.x-k8s.io/v1beta1`)
+- **kind** (required, string): Kind of the bootstrap resource (e.g., `K0sWorkerConfig`, `KubeadmConfig`)
+- **spec** (required, object): Provider-specific configuration for the bootstrap resource
+
+The controller validates that the apiVersion belongs to an allowed bootstrap API group.
 
 #### infrastructureSpec
 
-(required, object) Inline infrastructure configuration. 5-Spot creates this resource when
-the schedule window opens. The `apiVersion`, `kind`, and `spec` map directly to the
-infrastructure provider's resource type (e.g., `RemoteMachine`).
+(required, object) Inline infrastructure configuration that will be created when the schedule is active.
+This is a fully unstructured object that must contain:
 
-```yaml
-infrastructureSpec:
-  apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-  kind: RemoteMachine
-  spec:
-    address: 192.168.1.100
-    port: 22
-    user: admin
-```
+- **apiVersion** (required, string): API version of the infrastructure resource (e.g., `infrastructure.cluster.x-k8s.io/v1beta1`)
+- **kind** (required, string): Kind of the infrastructure resource (e.g., `RemoteMachine`, `AWSMachine`)
+- **spec** (required, object): Provider-specific configuration for the infrastructure resource
+
+The controller validates that the apiVersion belongs to an allowed infrastructure API group.
 
 #### machineTemplate
 
-(optional, object) Labels and annotations applied to the created CAPI Machine resource.
+(optional, object) Configuration for the created CAPI Machine resource.
 
-- **labels** (optional, map): Labels to apply to the created Machine.
-- **annotations** (optional, map): Annotations to apply to the created Machine.
+- **labels** (optional, map of string to string): Labels to apply to the created Machine
+- **annotations** (optional, map of string to string): Annotations to apply to the created Machine
+
+Note: Labels and annotations using reserved prefixes (`5spot.finos.org/`, `cluster.x-k8s.io/`) are rejected.
 
 #### priority
 
-(optional, integer 0-255, default: `50`) Priority for machine scheduling.
+(optional, integer 0-100, default: `50`) Priority for machine scheduling.
 Higher values indicate higher priority. Used for resource distribution across
 operator instances.
 
@@ -119,13 +119,13 @@ Format: `<number><unit>` where unit is `s` (seconds), `m` (minutes), or `h` (hou
 
 #### nodeDrainTimeout
 
-(optional, string, default: `5m`) Timeout for draining the Kubernetes node before
-the CAPI Machine is deleted.
+(optional, string, default: `5m`) Timeout for draining the node before deletion.
+Format: `<number><unit>` where unit is `s` (seconds), `m` (minutes), or `h` (hours).
 
 #### killSwitch
 
 (optional, boolean, default: `false`) When true, immediately removes the machine
-from the cluster, bypassing the graceful shutdown and drain steps.
+from the cluster and takes it out of rotation, bypassing the grace period.
 
 ### Status Fields
 
@@ -133,21 +133,13 @@ from the cluster, bypassing the graceful shutdown and drain steps.
 
 Current phase of the machine lifecycle. Possible values:
 
-- **Pending**: Initial state, schedule not yet evaluated
+- **Pending**: Initial state, awaiting schedule evaluation
 - **Active**: Machine is running and part of the cluster
-- **ShuttingDown**: Machine is being drained and removed
-- **Inactive**: Machine has been removed and is outside the schedule window
-- **Disabled**: Schedule is disabled (`schedule.enabled: false`)
-- **Terminated**: Machine was forcibly terminated (kill switch)
+- **ShuttingDown**: Machine is being gracefully removed (draining, etc.)
+- **Inactive**: Machine is outside scheduled time window and has been removed
+- **Disabled**: Schedule is disabled, machine is not active
+- **Terminated**: Machine has been permanently removed
 - **Error**: An error occurred during processing
-
-#### message
-
-Human-readable description of the current state or error.
-
-#### inSchedule
-
-Boolean. Whether the machine is currently within its scheduled time window.
 
 #### conditions
 
@@ -157,47 +149,32 @@ Array of condition objects with the following fields:
 - **status**: `True`, `False`, or `Unknown`
 - **reason**: One-word reason in CamelCase
 - **message**: Human-readable message
-- **lastTransitionTime**: Last time the condition transitioned (RFC3339)
+- **lastTransitionTime**: Last time the condition transitioned
 
-#### machineRef
+#### inSchedule
 
-Reference to the created CAPI Machine resource:
+(boolean) Whether the machine is currently within its scheduled time window.
 
-- **apiVersion**: API version of the Machine resource
-- **kind**: Kind of the Machine resource
-- **name**: Machine name
-- **namespace**: Machine namespace
+#### message
 
-#### bootstrapRef
-
-Reference to the created bootstrap resource (e.g., `K0sWorkerConfig`):
-
-- **apiVersion**, **kind**, **name**, **namespace**
-
-#### infrastructureRef
-
-Reference to the created infrastructure resource (e.g., `RemoteMachine`):
-
-- **apiVersion**, **kind**, **name**, **namespace**
-
-#### nodeRef
-
-Reference to the Kubernetes Node once the machine has joined the cluster:
-
-- **name**: Node name
-
-#### lastScheduledTime
-
-Last time a machine was created and activated (RFC3339 format).
-
-#### nextActivation
-
-Next time the machine will be activated according to its schedule (RFC3339 format).
-
-#### nextCleanup
-
-Time when the machine will be cleaned up (end of current schedule window, RFC3339 format).
+(string) Human-readable message describing the current state.
 
 #### observedGeneration
 
-The spec generation last processed by the controller. Used for change detection.
+(integer) The generation observed by the controller. Used for change detection.
+
+#### providerID
+
+(optional, string) Provider-assigned machine identifier, copied from the CAPI Machine's
+`spec.providerID`. Stable for the life of the machine and unique across the cluster.
+Examples: `libvirt:///uuid-abc-123`, `aws:///us-east-1a/i-0abcd1234`.
+
+#### nodeRef
+
+(optional, object) Reference to the Kubernetes Node once the Machine is provisioned.
+Mirrors the shape of CAPI's `Machine.status.nodeRef`:
+
+- **apiVersion** (required, string): API version of the Node resource (typically `v1`)
+- **kind** (required, string): Kind of the referenced object (typically `Node`)
+- **name** (required, string): Name of the Node
+- **uid** (optional, string): UID of the Node, protecting against name reuse

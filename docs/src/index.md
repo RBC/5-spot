@@ -1,14 +1,12 @@
 # <img src="images/5-spot-icon.svg" alt="5-Spot Logo" width="60"  style="vertical-align: middle; margin-right: 5px;" /> Introduction
 
-## CI/CD
-
 [![Build (PR)](https://img.shields.io/github/actions/workflow/status/finos/5-spot/build.yaml?event=pull_request&label=Build%20(PR))](https://github.com/finos/5-spot/actions/workflows/build.yaml)
 [![Build (push)](https://img.shields.io/github/actions/workflow/status/finos/5-spot/build.yaml?event=push&label=Build%20(push))](https://github.com/finos/5-spot/actions/workflows/build.yaml)
 [![Build (release)](https://img.shields.io/github/actions/workflow/status/finos/5-spot/build.yaml?event=release&label=Build%20(release))](https://github.com/finos/5-spot/actions/workflows/build.yaml)
 
-**5-Spot** is a cloud-native Kubernetes controller for managing time-based machine scheduling on physical nodes using Cluster API (CAPI). It enables you to automatically add and remove machines from your CAPI clusters based on time schedules, bringing cost optimization and resource efficiency to your infrastructure.
+**5 Spot** is a cloud-native Kubernetes controller for managing time-based machine scheduling on physical nodes using Cluster API (CAPI). It enables you to automatically add and remove machines from your CAPI clusters based on time schedules, bringing cost optimization and resource efficiency to your infrastructure.
 
-## What is 5-Spot?
+## What is 5 Spot?
 
 5-Spot watches for `ScheduledMachine` Custom Resources in your Kubernetes cluster and automatically manages the lifecycle of physical machines based on configured time schedules. It enables declarative, GitOps-friendly machine scheduling.
 
@@ -23,7 +21,7 @@
 - **Multi-instance** - Horizontal scaling with consistent hashing
 - **Full Observability** - Prometheus metrics and health checks
 
-## Why 5-Spot?
+## Why 5 Spot?
 
 Traditional infrastructure management involves:
 
@@ -33,7 +31,7 @@ Traditional infrastructure management involves:
 - Complex multi-region setups
 - No audit trail for machine lifecycle
 
-5-Spot transforms this by:
+5 Spot transforms this by:
 
 - Managing machines as Kubernetes resources
 - Automated time-based machine lifecycle
@@ -41,9 +39,9 @@ Traditional infrastructure management involves:
 - Full GitOps workflow support
 - Built-in audit trail via Kubernetes events
 
-## Who Should Use 5-Spot?
+## Who Should Use 5 Spot?
 
-5-Spot is ideal for:
+5 Spot is ideal for:
 
 - **Platform Engineers** managing physical infrastructure with CAPI
 - **DevOps Teams** looking to optimize costs through scheduling
@@ -99,7 +97,7 @@ Apply it to your cluster:
 kubectl apply -f scheduled-machine.yaml
 ```
 
-5-Spot automatically:
+5 Spot automatically:
 
 1. Evaluates the schedule against the current time
 2. Adds the machine to the cluster when within the schedule window
@@ -141,7 +139,7 @@ stateDiagram-v2
 
 ## Next Steps
 
-- [Quick Start](./installation/quickstart.md) - Get started with 5-Spot quickly
+- [Quick Start](./installation/quickstart.md) - Get started with 5 Spot quickly
 - [Prerequisites](./installation/prerequisites.md) - What you need before installation
 - [Architecture Overview](./concepts/architecture.md) - Understand how 5-Spot works
 - [API Reference](./reference/api.md) - Complete API documentation

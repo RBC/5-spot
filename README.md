@@ -4,28 +4,29 @@
 
 A cloud-native Kubernetes controller for managing time-based machine scheduling on physical nodes using Cluster API (CAPI).
 
-## CI/CD
+### CI/CD
 
 [![Build (PR)](https://img.shields.io/github/actions/workflow/status/finos/5-spot/build.yaml?event=pull_request&label=Build%20(PR))](https://github.com/finos/5-spot/actions/workflows/build.yaml)
 [![Build (push)](https://img.shields.io/github/actions/workflow/status/finos/5-spot/build.yaml?event=push&label=Build%20(push))](https://github.com/finos/5-spot/actions/workflows/build.yaml)
 [![Build (release)](https://img.shields.io/github/actions/workflow/status/finos/5-spot/build.yaml?event=release&label=Build%20(release))](https://github.com/finos/5-spot/actions/workflows/build.yaml)
 
-## Technology & Compatibility
+### Technology & Compatibility
 
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Kubernetes](https://img.shields.io/badge/kubernetes-1.27+-326CE5.svg?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![Cluster API](https://img.shields.io/badge/Cluster%20API-CAPI-326CE5.svg?logo=kubernetes&logoColor=white)](https://cluster-api.sigs.k8s.io/)
+[![FINOS CALM](https://img.shields.io/badge/FINOS_CALM-1.37-blue?logo=finos)](https://calm.finos.org/)
 [![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)](https://www.linux.org/)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
-## Security & Compliance
+### Security & Compliance
 
 [![SPDX](https://img.shields.io/badge/SPDX-License--Identifier-blue)](https://spdx.dev/)
 [![Gitleaks](https://img.shields.io/badge/Gitleaks-Secret%20Scanning-blue)](https://github.com/gitleaks/gitleaks)
 [![Snyk](https://img.shields.io/badge/Snyk-SAST%20Scanning-purple)](https://snyk.io/)
 [![Aqua](https://img.shields.io/badge/Aqua-Container%20Scanning-00ADD8)](https://www.aquasec.com/)
 
-## License
+### License
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
