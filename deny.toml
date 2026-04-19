@@ -1,0 +1,67 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# cargo-deny configuration — enforces license allow-list, security advisories,
+# and dependency source restrictions. Runs in CI on every PR and push to main.
+# See https://embarkstudios.github.io/cargo-deny/ for the full schema.
+
+[graph]
+all-features = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Licenses — allow-list of SPDX identifiers acceptable for any dependency.
+# Anything outside this list fails the check; widen deliberately with a
+# comment explaining the provenance of the new license.
+# ─────────────────────────────────────────────────────────────────────────────
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "OpenSSL",
+]
+
+# Crates that do not publish a license in Cargo.toml but are known-safe.
+# Keep this list as short as possible; justify any addition.
+[[licenses.exceptions]]
+allow = ["Unicode-DFS-2016"]
+name = "unicode-ident"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Advisories — RustSec advisory-db findings. Same source as cargo-audit.
+# ─────────────────────────────────────────────────────────────────────────────
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bans — prevent multiple versions of the same crate and wildcard deps.
+# Multiple versions start as `warn` to avoid breaking CI on transitive pulls
+# we do not control; tighten to `deny` once the tree is clean.
+# ─────────────────────────────────────────────────────────────────────────────
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sources — only allow the official crates.io registry. Prevents silent
+# introduction of dependencies from alternate registries or unauthenticated
+# git URLs.
+# ─────────────────────────────────────────────────────────────────────────────
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

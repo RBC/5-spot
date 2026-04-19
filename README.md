@@ -21,10 +21,15 @@ A cloud-native Kubernetes controller for managing time-based machine scheduling 
 
 ### Security & Compliance
 
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/finos/5-spot/badge)](https://scorecard.dev/viewer/?uri=github.com/finos/5-spot)
 [![SPDX](https://img.shields.io/badge/SPDX-License--Identifier-blue)](https://spdx.dev/)
 [![Gitleaks](https://img.shields.io/badge/Gitleaks-Secret%20Scanning-blue)](https://github.com/gitleaks/gitleaks)
-[![Snyk](https://img.shields.io/badge/Snyk-SAST%20Scanning-purple)](https://snyk.io/)
-[![Aqua](https://img.shields.io/badge/Aqua-Container%20Scanning-00ADD8)](https://www.aquasec.com/)
+[![Semgrep](https://img.shields.io/badge/Semgrep-SAST-1B2F3D?logo=semgrep)](https://semgrep.dev/)
+[![Trivy](https://img.shields.io/badge/Trivy-Container%20%26%20IaC%20Scan-1904DA?logo=aquasec&logoColor=white)](https://trivy.dev/)
+[![cargo-deny](https://img.shields.io/badge/cargo--deny-License%20%26%20Advisory-orange?logo=rust)](https://github.com/EmbarkStudios/cargo-deny)
+[![cargo-audit](https://img.shields.io/badge/cargo--audit-RustSec-orange?logo=rust)](https://github.com/rustsec/rustsec)
+[![Cosign](https://img.shields.io/badge/Cosign-Sigstore-4285F4?logo=sigstore&logoColor=white)](https://docs.sigstore.dev/cosign/)
+[![SLSA](https://img.shields.io/badge/SLSA-Level%203-green?logo=slsa)](https://slsa.dev/)
 
 ### License
 

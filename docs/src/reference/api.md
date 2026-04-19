@@ -1,4 +1,4 @@
-# 5 Spot API Reference
+# 5Spot API Reference
 
 ## ScheduledMachine
 
@@ -162,3 +162,19 @@ Array of condition objects with the following fields:
 #### observedGeneration
 
 (integer) The generation observed by the controller. Used for change detection.
+
+#### providerID
+
+(optional, string) Provider-assigned machine identifier, copied from the CAPI Machine's
+`spec.providerID`. Stable for the life of the machine and unique across the cluster.
+Examples: `libvirt:///uuid-abc-123`, `aws:///us-east-1a/i-0abcd1234`.
+
+#### nodeRef
+
+(optional, object) Reference to the Kubernetes Node once the Machine is provisioned.
+Mirrors the shape of CAPI's `Machine.status.nodeRef`:
+
+- **apiVersion** (required, string): API version of the Node resource (typically `v1`)
+- **kind** (required, string): Kind of the referenced object (typically `Node`)
+- **name** (required, string): Name of the Node
+- **uid** (optional, string): UID of the Node, protecting against name reuse

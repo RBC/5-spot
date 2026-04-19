@@ -9,6 +9,147 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-19 17:15] - Add Dependabot config for Actions, Cargo, and Docker
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/dependabot.yml` (new): SPDX-headered Dependabot v2 config with three ecosystems:
+  - **`github-actions`** — weekly Monday 09:00 `America/Toronto`, limit 10 PRs. Grouped update `actions-routine` bundles low-risk first-party + tooling bumps (`actions/*`, `docker/*`, `github/codeql-action`, `softprops/action-gh-release`, `anchore/sbom-action`, `aquasecurity/trivy-action`) into one PR. Security-sensitive actions (`sigstore/*`, `EmbarkStudios/cargo-deny-action`, `ossf/*`) are left ungrouped so each one opens as an individual PR for per-change review. `dtolnay/rust-toolchain` explicitly ignored (branch-tracking ref, no tags — re-pinned manually on quarterly cadence).
+  - **`cargo`** — weekly Monday, limit 5 PRs. Groups patch + minor bumps; majors open individually. cargo-audit + cargo-deny CI gates block regressions.
+  - **`docker`** — weekly Monday, limit 3 PRs. Picks up `FROM ...@sha256:...` digest bumps once Dockerfiles adopt digest pinning (currently no-op; future-proof).
+- Commit-message prefix: `ci` for Actions, `chore` for Cargo and Docker. Labels applied to every PR for easy filtering.
+
+### Why
+The previous commit SHA-pinned all external GitHub Actions across the workflows, which is correct for supply-chain hygiene but creates stagnation risk — pins do not auto-update, so known-vulnerable action versions can sit in CI indefinitely. Dependabot solves the stagnation side of the trade-off: it opens a PR per new release with the full changelog diff, and the same CI gates (Semgrep, Trivy, cargo-deny, Scorecard) that guard any other PR guard the bump itself. This closes the loop between "pin everything" and "keep pins current" without inviting humans to cowboy-update SHAs.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (Dependabot)
+- [ ] Documentation only
+
+### Operational note
+- **PR volume:** expect 1–3 Actions PRs and 1–2 Cargo PRs per week initially, tapering as the tree stabilizes. The `actions-routine` group keeps the routine noise in one PR.
+- **Review rule of thumb:** security-sensitive bumps (sigstore, cargo-deny, ossf) → read the full release notes before merging. Routine Actions group → verify Scorecard Pinned-Dependencies still passes, spot-check the diff for any behaviour change flags, merge if CI is green.
+- **Future-proof Docker:** `Dockerfile` and `Dockerfile.chainguard` use tag-based `FROM` lines today. If we move to digest pinning (`FROM image@sha256:...`), Dependabot starts opening PRs for base-image digest bumps automatically — no further config change needed.
+
+---
+
+## [2026-04-19 17:00] - Pin all GitHub Actions to full commit SHAs
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`, `calm.yaml`, `calm-test.yaml`, `docs.yaml` and `.github/actions/prepare-docker-binaries/action.yaml`: replaced every `@<tag>` reference with `@<40-char-sha> # <tag>` for all external actions. 77 replacements across 5 files covering `actions/*`, `docker/*`, `sigstore/cosign-installer`, `anchore/sbom-action`, `aquasecurity/trivy-action`, `EmbarkStudios/cargo-deny-action`, `softprops/action-gh-release`, `github/codeql-action/upload-sarif`, `dtolnay/rust-toolchain`, and all `firestoned/github-actions/*` sub-actions. `scorecard.yaml` was already SHA-pinned and is unchanged.
+- `.github/workflows/build.yaml`: the SLSA reusable workflow at `slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0` stays on a semver tag — pinning to SHA would break SLSA provenance verification because `slsa-verifier` validates against approved released versions. Added an inline multi-line comment explaining this so future reviewers don't "fix" it by SHA-pinning.
+- `aquasecurity/trivy-action` was previously pinned to the nonexistent tag `0.28.0` (missing `v` prefix — the tag is `v0.28.0`). Bumped to the current latest `v0.35.0` at SHA `57a97c7e7821a5776cebc9bb87c984fa69cba8f1`.
+- `dtolnay/rust-toolchain@stable` resolved to SHA `29eef336d9b2848a0b548edc03f92a220660cdb8` with an inline comment noting it is a moving ref that should be re-pinned quarterly to keep Rust current.
+
+### Why
+Closes the OpenSSF Scorecard `Pinned-Dependencies` finding across the entire CI surface. Unpinned action tags are a supply-chain risk: a compromised or silently-force-pushed tag would silently execute attacker code in our workflows with access to `GITHUB_TOKEN`, `SNYK_TOKEN`-equivalent secrets, and GHCR push permissions. SHA pinning freezes behaviour to a specific reviewed commit; Dependabot can later send PRs to bump pins with a full diff.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CI/CD workflow)
+- [ ] Documentation only
+
+### Operational note
+- **Dependabot for Actions is strongly recommended** as a follow-up so pins don't rot. Add `.github/dependabot.yml` with a `github-actions` ecosystem entry; Dependabot will open one PR per outdated action SHA with a changelog link.
+- **Re-pin cadence:** security-sensitive actions (`sigstore/*`, `ossf/*`, `EmbarkStudios/cargo-deny-action`) should be bumped within a week of a new release. Build tooling (`docker/*`, `actions/*`) is less time-sensitive. `dtolnay/rust-toolchain` should be bumped quarterly to keep the Rust toolchain current.
+- All pin comments include the resolved semver tag (e.g. `# v4.3.1`) so a human reader can see at a glance what version is in use without clicking through to the SHA.
+
+---
+
+## [2026-04-19 17:30] - Phase 5 docs finish: regenerate stale api.md (mdBook source)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/reference/api.md`: regenerated via `make crddoc`. Now includes the Phase 1 status-schema additions — `providerID`, extended `nodeRef` (with `uid`, `apiVersion`, `kind` alongside `name`), `machineRef`, `bootstrapRef`, `infrastructureRef`, and refreshed condition/observedGeneration docstrings. Previously this file was stale; Phase 1's regen wrote only to `docs/reference/api.md` (a legacy path referenced by `.claude/SKILL.md`), not to the mdBook source path that actually renders on the doc site (`docs/src/reference/api.md`, per the `Makefile` `crddoc` target).
+
+### Why
+The Phase 5 checklist in the roadmap required "`docs/src/reference/api.md` — regenerated by `regen-api-docs` skill." Spot-checking after the earlier Phase 5 commit revealed that the canonical Makefile target output path and the SKILL.md instruction disagreed, and the mdBook source copy was still on the pre-Phase-1 schema. Regenerating closes that gap so the doc site reflects what consumers actually get on `kubectl get scheduledmachine -o yaml`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+### Operational note
+- **SKILL.md drift:** `.claude/SKILL.md` currently instructs `cargo run --bin crddoc > docs/reference/api.md`, which writes to the wrong path. The `Makefile` `crddoc` target is correct. A small follow-up should reconcile the skill instructions with the Makefile so future regens aren't silently written to the wrong path.
+
+---
+
+## [2026-04-19 16:30] - Phase 5 docs: watch-topology diagram in architecture.md
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/concepts/architecture.md`: New top-level section "Watch Topology" with a Mermaid diagram showing the primary `ScheduledMachine` watch plus the two new secondary watches on CAPI `Machine` (label-filtered) and core `Node` (cluster-wide) feeding into pure reverse-mapper functions (`machine_to_scheduled_machine`, `node_to_scheduled_machines`) that enqueue the owning `ScheduledMachine`. Updated the "Controller" component-detail bullet list to enumerate the three watches.
+- `docs/roadmaps/5spot-event-driven-watches-and-status-enrichment.md` (copy at `~/dev/roadmaps/`): status header updated to `Phase 5 ✅` — roadmap closed.
+
+### Why
+Closes Phase 5 of the event-driven-watches roadmap. Until this commit, the concepts doc described a controller that only watched its own CR; readers had no way to understand why a Node cordon now triggers an immediate reconcile instead of waiting for the next requeue. The watch-topology diagram makes the event-driven claim concrete and auditable.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-04-19 16:00] - Replace misleading Snyk claim with real OSS security tooling (Semgrep + Trivy config + cargo-deny)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`: Three new PR + push-to-main jobs (release events skip these — the release pipeline relies on scans that already ran on main):
+  - `semgrep-sast` — runs `semgrep scan` in the `returntocorp/semgrep` container with the community `p/rust`, `p/security-audit`, `p/secrets`, and `p/owasp-top-ten` rulesets; `--metrics=off`; uploads SARIF to Code Scanning under the `semgrep` category. No token required.
+  - `iac-scan` — `aquasecurity/trivy-action@0.28.0` with `scan-type: config` against the repo root (picks up `deploy/**/*.yaml` + `Dockerfile*` + `Dockerfile.chainguard`); uploads SARIF under the `trivy-iac` category.
+  - `cargo-deny` — `EmbarkStudios/cargo-deny-action@v2` running `check --all-features` against the new `deny.toml`.
+- `deny.toml` (new, repo root): SPDX-headered cargo-deny config. License allow-list covers Apache-2.0, MIT, BSD-2/3-Clause, ISC, Unicode-DFS-2016, Unicode-3.0, Zlib, CC0-1.0, MPL-2.0, OpenSSL. Advisories: `yanked = "deny"`. Bans: `multiple-versions = "warn"` (to avoid breaking CI on transitive pulls we do not control), `wildcards = "deny"`. Sources: only official crates.io registry, no unknown git URLs.
+- `README.md`: Removed the misleading `Snyk` SAST badge (we never actually ran Snyk). Added badges for **Semgrep**, **Trivy** (Container + IaC), **cargo-deny**, **cargo-audit**, **Cosign**, and **SLSA** — each reflecting tooling that actually runs in the pipeline.
+- `docs/architecture/calm/architecture.json`: The `supply-chain-scanning` control description now reads: "Repository is scanned by Semgrep OSS (SAST), Trivy (container image + IaC config), cargo-audit + cargo-deny (RustSec advisories, license allow-list, source restrictions), and Gitleaks (secrets); OpenSSF Scorecard publishes supply-chain posture; SPDX license identifiers on source files." Old wording referenced Snyk and Aqua which were never actually wired up.
+
+### Why
+The README's Security & Compliance section and the CALM architecture JSON both claimed "Snyk (SAST)" but `rg -i snyk` returned zero hits outside those two strings — the repo has never had Snyk configured. That is a compliance posture lie for a project in a regulated banking context. This commit closes the three real gaps with free OSS tooling: SAST (Semgrep), IaC misconfig scanning (Trivy config), and dependency license/advisory enforcement (cargo-deny). All three are token-free, run on every PR, and write SARIF to the existing Code Scanning dashboard — same surface consumers already use for Scorecard and Trivy container results.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CI/CD workflow + cargo-deny config)
+- [ ] Documentation only
+
+### Operational note
+- **First run of `cargo-deny` may fail** if an existing transitive dep carries a license not in the allow-list. Treat the first failure as signal: either add the license to `deny.toml` (with a justification comment) or file an issue to swap the dep. Do not weaken `unknown-registry = "deny"` — that is a supply-chain boundary, not a nuisance.
+- **Semgrep findings initially expected**: the first run will surface Rust and OWASP-style findings that were never triaged. Review in Code Scanning → filter by tool `semgrep` → triage-or-suppress with justification (Semgrep supports `// nosemgrep: rule-id — reason` inline comments).
+- **Trivy IaC findings**: scope is the `deploy/` manifests plus both Dockerfiles. Findings you cannot fix (e.g., a base-image constraint) can be suppressed via a `.trivyignore` file at repo root with a comment.
+- All three jobs run as `needs: [verify-commits]` so they parallelize with `extract-version`/`build` and do not serialize the critical path.
+
+---
+
+## [2026-04-19 15:45] - Add OpenSSF Scorecard badge to README
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `README.md`: Added `[![OpenSSF Scorecard]...]` badge as the first entry in the "Security & Compliance" section, linking to `https://scorecard.dev/viewer/?uri=github.com/finos/5-spot`.
+
+### Why
+The `scorecard.yaml` workflow already publishes results to the OpenSSF REST API (`api.securityscorecards.dev`) and to GitHub Code Scanning, but without a visible badge the score is invisible to anyone reading the README. The badge is the canonical consumer-facing signal that the project runs Scorecard and auto-updates with each `scorecard.yaml` run.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-04-19 15:30] - Sign binaries and generate SLSA provenance on push-to-main (not only on release)
 
 **Author:** Erick Bourgeois

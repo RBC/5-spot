@@ -1,0 +1,100 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Dependabot keeps SHA-pinned GitHub Actions, Rust crates, and Docker base
+# images current. Each ecosystem opens PRs against main on the schedule below.
+# PRs include the full release-notes diff and the new SHA, so reviewers can
+# verify what changed before merging.
+#
+# Docs: https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+
+version: 2
+
+updates:
+  # ─────────────────────────────────────────────────────────────────────────
+  # GitHub Actions — re-pin SHAs when upstream cuts a new release.
+  # Covers every workflow under .github/workflows AND the composite actions
+  # under .github/actions. Dependabot rewrites both the SHA and the trailing
+  # `# vX.Y.Z` comment automatically.
+  # ─────────────────────────────────────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Toronto"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      # One PR per week bundling routine first-party / tooling bumps.
+      actions-routine:
+        applies-to: version-updates
+        patterns:
+          - "actions/*"
+          - "docker/*"
+          - "github/codeql-action"
+          - "softprops/action-gh-release"
+          - "anchore/sbom-action"
+          - "aquasecurity/trivy-action"
+      # Security-sensitive actions get their own PRs so each one is reviewed
+      # individually. Keep sigstore/ossf/cargo-deny out of grouped updates.
+      # (Ungrouped entries always open as individual PRs.)
+    ignore:
+      # dtolnay/rust-toolchain tracks the `stable` branch and has no tags, so
+      # Dependabot would see no "new version" to propose. It is re-pinned by
+      # hand on the quarterly cadence documented in build.yaml.
+      - dependency-name: "dtolnay/rust-toolchain"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Rust crates (Cargo.lock) — keep transitive deps patched against RustSec
+  # advisories. The cargo-audit + cargo-deny CI jobs will block merges that
+  # regress the advisory status, so Dependabot can only land a PR that passes
+  # those gates.
+  # ─────────────────────────────────────────────────────────────────────────
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Toronto"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "rust"
+    groups:
+      cargo-patch-and-minor:
+        applies-to: version-updates
+        update-types:
+          - "patch"
+          - "minor"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Docker base images — Chainguard and Distroless both publish rolling tags,
+  # so what Dependabot actually catches here are digest bumps in the
+  # Dockerfile / Dockerfile.chainguard pinned `FROM image@sha256:…` lines.
+  # If no digest pins exist yet, these entries are a no-op until one is added.
+  # ─────────────────────────────────────────────────────────────────────────
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Toronto"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "docker"

@@ -48,13 +48,60 @@ flowchart TB
     SM -->|owns| Machine
 ```
 
+## Watch Topology
+
+5-Spot is an **event-driven** controller — it reacts to Kubernetes API events
+rather than polling. The primary controller watches `ScheduledMachine`
+resources; two secondary `.watches()` on CAPI `Machine` and core `Node`
+trigger reconciles of the *owning* `ScheduledMachine` whenever a downstream
+resource changes.
+
+```mermaid
+flowchart LR
+    subgraph Primary["Primary Watch"]
+        SM[ScheduledMachine CR]
+    end
+
+    subgraph Secondary["Secondary Watches (.watches)"]
+        M[CAPI Machine<br/><i>filtered by label</i><br/>5spot.eribourg.dev/scheduled-machine]
+        N[Node<br/><i>cluster-wide</i>]
+    end
+
+    subgraph Mappers["Reverse Mappers (pure fns)"]
+        MM[machine_to_scheduled_machine<br/><i>reads the label</i>]
+        NM[node_to_scheduled_machines<br/><i>matches status.nodeRef.name<br/>against Controller Store</i>]
+    end
+
+    SM -->|ObjectRef| Q[Reconcile Queue]
+    M --> MM --> Q
+    N --> NM --> Q
+
+    Q --> R[reconcile_scheduled_machine]
+```
+
+**Why this matters.** When CAPI populates `status.nodeRef` on a `Machine`, or
+an operator drains a `Node` via `kubectl cordon`, the reconciler is notified
+in under a second through the watch stream — there is no polling loop. The
+label filter on the Machine watch means we only receive events for Machines
+*we created*; the Node watch uses the Controller's own reflector store to map
+a Node event back to the `ScheduledMachine` whose `status.nodeRef.name`
+matches, so we never issue an extra API list per event.
+
+**Reverse mappers** are pure functions in `src/reconcilers/helpers.rs`
+(`machine_to_scheduled_machine`, `node_to_scheduled_machines`), unit-tested in
+isolation. They return an empty `Vec` when no match is found — the controller
+treats empty as "no enqueue," so an unrelated Machine or Node event costs
+nothing beyond the label lookup.
+
 ## Component Details
 
 ### Controller
 
 The main entry point that:
 
-- Watches for ScheduledMachine resource changes
+- Watches for ScheduledMachine resource changes (primary watch)
+- Watches CAPI `Machine` resources filtered by the `5spot.eribourg.dev/scheduled-machine` label (secondary watch)
+- Watches core `Node` resources cluster-wide (secondary watch)
 - Manages reconciliation queue
 - Handles multi-instance distribution via consistent hashing
 - Provides health and metrics endpoints

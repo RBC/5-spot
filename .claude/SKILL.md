@@ -67,11 +67,15 @@ kubectl apply -f deploy/crds/scheduledmachine.yaml
 
 **Steps:**
 ```bash
-# Regenerate API reference from CRD types
-cargo run --bin crddoc > docs/reference/api.md
+# Regenerate API reference from CRD types.
+# Prefer the Makefile target — it writes to the mdBook source path that
+# actually renders on the doc site.
+make crddoc
+# Equivalent:
+#   cargo run --bin crddoc > docs/src/reference/api.md
 ```
 
-**Verification:** `docs/reference/api.md` reflects the current CRD schema.
+**Verification:** `docs/src/reference/api.md` reflects the current CRD schema.
 
 ---
 
@@ -184,7 +188,7 @@ For each of the following files, check the YAML examples and field descriptions
 against `src/crd.rs` (source of truth) and `examples/*.yaml` (reference examples):
 
 1. `docs/src/installation/quickstart.md` — YAML example in "Create Your First ScheduledMachine"
-2. `docs/reference/api.md` — all Spec Fields, Status Fields, and the top-level example
+2. `docs/src/reference/api.md` — all Spec Fields, Status Fields, and the top-level example (auto-generated — regenerate with `make crddoc`, do not hand-edit)
 3. `docs/src/advanced/capi-integration.md` — Bootstrap/Infrastructure sections and provider examples
 4. `docs/src/concepts/scheduled-machine.md` — field tables (types, defaults, required flags)
 5. Any other `.md` file under `docs/` that contains a YAML snippet with `kind: ScheduledMachine`
@@ -304,7 +308,7 @@ done
 - [ ] `examples/*.yaml` updated to match new schema
 - [ ] `docs/` documentation updated
 - [ ] `kubectl apply --dry-run=client -f examples/` passes
-- [ ] `cargo run --bin crddoc > docs/reference/api.md` run (LAST)
+- [ ] `make crddoc` run (LAST) — writes to `docs/src/reference/api.md` (mdBook source)
 
 ### If `src/reconcilers/` was modified:
 - [ ] Reconciliation flow diagrams updated in `docs/`
