@@ -388,7 +388,7 @@ jobs:
       # Sign by digest (not tag) to guarantee we sign exactly what was pushed.
       - name: Install Cosign
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
 
       - name: Sign container image with Cosign
         if: github.event_name != 'pull_request'
