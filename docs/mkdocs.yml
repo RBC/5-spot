@@ -207,6 +207,8 @@ nav:
   - Concepts:
       - Overview: concepts/index.md
       - Architecture: concepts/architecture.md
+      - System Diagram: architecture/system.md
+      - Architecture Flows: architecture/flows.md
       - ScheduledMachine: concepts/scheduled-machine.md
       - Machine Lifecycle: concepts/machine-lifecycle.md
       - Schedule Configuration: concepts/schedules.md
@@ -238,6 +240,3 @@ nav:
       - CLI Reference: reference/cli.md
       - Changelog: changelog.md
       - License: license.md
-
-  - Roadmaps:
-      - Project Roadmap 2026: roadmaps/project-roadmap-2026.md

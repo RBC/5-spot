@@ -1,4 +1,4 @@
-# 5Spot API Reference
+# 5 Spot API Reference
 
 ## ScheduledMachine
 

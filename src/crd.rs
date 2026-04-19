@@ -8,7 +8,7 @@
 //!
 //! ## Key types
 //! - [`ScheduledMachineSpec`] / [`ScheduledMachine`] — the top-level CR
-//! - [`ScheduleSpec`] — time-based schedule (days of week, hours, timezone, or cron)
+//! - [`ScheduleSpec`] — time-based schedule (days of week, hours, timezone)
 //! - [`EmbeddedResource`] — inline bootstrap or infrastructure provider spec
 //! - [`ScheduledMachineStatus`] — runtime phase and condition tracking
 //! - [`Condition`] — standard Kubernetes status condition
@@ -35,6 +35,8 @@ use std::collections::{BTreeMap, HashSet};
     printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
     printcolumn = r#"{"name":"InSchedule","type":"boolean","jsonPath":".status.inSchedule"}"#,
     printcolumn = r#"{"name":"Enabled","type":"boolean","jsonPath":".spec.schedule.enabled"}"#,
+    printcolumn = r#"{"name":"Schedule Days","type":"string","jsonPath":".spec.schedule.daysOfWeek"}"#,
+    printcolumn = r#"{"name":"Schedule Hours","type":"string","jsonPath":".spec.schedule.hoursOfDay"}"#,
     printcolumn = r#"{"name":"KillSwitch","type":"boolean","jsonPath":".spec.killSwitch"}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
@@ -95,20 +97,13 @@ fn default_node_drain_timeout() -> String {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduleSpec {
-    /// Cron expression for the schedule (e.g., "0 9-17 * * 1-5" for Mon-Fri 9am-5pm)
-    /// If specified, takes precedence over daysOfWeek/hoursOfDay
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cron: Option<String>,
-
     /// Days of the week when machine should be active
     /// Supports: individual days (mon), ranges (mon-fri), combinations (mon-wed,fri-sun)
-    /// Ignored if cron is specified
     #[serde(default)]
     pub days_of_week: Vec<String>,
 
     /// Hours when machine should be active (0-23)
     /// Supports: individual hours (9), ranges (9-17), combinations (0-9,18-23)
-    /// Ignored if cron is specified
     #[serde(default)]
     pub hours_of_day: Vec<String>,
 
@@ -132,33 +127,19 @@ fn default_enabled() -> bool {
 }
 
 impl ScheduleSpec {
-    /// Check if this schedule uses cron expression
-    #[must_use]
-    pub fn uses_cron(&self) -> bool {
-        self.cron.is_some()
-    }
-
     /// Get the set of active weekday numbers (0=Monday, 6=Sunday)
-    /// Returns None if using cron expression
     ///
     /// # Errors
     /// Returns error if `days_of_week` parsing fails
     pub fn get_active_weekdays(&self) -> Result<Option<HashSet<u8>>, String> {
-        if self.uses_cron() {
-            return Ok(None);
-        }
         parse_day_ranges(&self.days_of_week).map(Some)
     }
 
     /// Get the set of active hours (0-23)
-    /// Returns None if using cron expression
     ///
     /// # Errors
     /// Returns error if `hours_of_day` parsing fails
     pub fn get_active_hours(&self) -> Result<Option<HashSet<u8>>, String> {
-        if self.uses_cron() {
-            return Ok(None);
-        }
         parse_hour_ranges(&self.hours_of_day).map(Some)
     }
 }

@@ -1,0 +1,460 @@
+{
+  "$schema": "https://calm.finos.org/release/1.2/meta/calm.json",
+  "nodes": [
+    {
+      "unique-id": "actor-platform-operator",
+      "node-type": "actor",
+      "name": "Platform Operator",
+      "description": "Human operator who authors ScheduledMachine custom resources and manages the controller."
+    },
+    {
+      "unique-id": "ecosystem-management-cluster",
+      "node-type": "ecosystem",
+      "name": "Management Kubernetes Cluster",
+      "description": "Kubernetes cluster (>=1.27) that hosts the 5-Spot controller alongside Cluster API controllers. Acts as the control plane for time-based machine scheduling."
+    },
+    {
+      "unique-id": "ecosystem-workload-cluster",
+      "node-type": "ecosystem",
+      "name": "CAPI Workload Cluster",
+      "description": "Target CAPI-managed workload cluster (e.g. k0s via k0smotron) that physical nodes join when their schedule is active."
+    },
+    {
+      "unique-id": "service-five-spot-controller",
+      "node-type": "service",
+      "name": "5-Spot Controller",
+      "description": "Rust kube-rs controller that reconciles ScheduledMachine CRs, evaluates schedules every ~60s, and drives the machine lifecycle (Pending -> Scheduled -> Active -> Removing -> Inactive).",
+      "interfaces": [
+        {
+          "unique-id": "five-spot-metrics",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "path": "/metrics",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "five-spot-health",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/healthz",
+            "protocol": "HTTP"
+          }
+        }
+      ],
+      "controls": {
+        "least-privilege": {
+          "description": "Controller ServiceAccount is bound to a ClusterRole scoped to CRD, CAPI, bootstrap/infra providers, events, secrets (read), nodes and pod eviction. No cluster-admin.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-3", "AC-6"],
+                "evidence": "deploy/deployment/rbac/clusterrole.yaml"
+              }
+            }
+          ]
+        },
+        "container-hardening": {
+          "description": "Non-root UID 65534, read-only root filesystem, all Linux capabilities dropped, no privilege escalation, distroless base image.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/190/final",
+              "config": {
+                "framework": "NIST SP 800-190",
+                "controls": ["CM-6", "SI-7", "SC-39"],
+                "evidence": "deploy/deployment/deployment.yaml"
+              }
+            }
+          ]
+        },
+        "leader-election-ha": {
+          "description": "Leader election via Kubernetes Lease (coordination.k8s.io) with 15s lease, 10s renew deadline, 2s retry; non-leader replicas stand by for ~15s failover.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["CP-2", "SC-5"],
+                "evidence": "deploy/deployment/deployment.yaml"
+              }
+            }
+          ]
+        },
+        "secret-scanning": {
+          "description": "Gitleaks pre-commit hook and CI scan prevent credentials from being committed to the repository.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["IA-5", "SI-4"],
+                "evidence": ".gitleaks.toml, .github/workflows/"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "data-asset-scheduledmachine-cr",
+      "node-type": "data-asset",
+      "name": "ScheduledMachine Custom Resource",
+      "description": "Namespaced CRD (5spot.finos.org/v1alpha1) declaring a machine, its schedule (daysOfWeek, hoursOfDay, timezone), inline bootstrap/infrastructure specs, priority, grace periods, and kill switch."
+    },
+    {
+      "unique-id": "service-kubernetes-api",
+      "node-type": "service",
+      "name": "Kubernetes API Server",
+      "description": "Management cluster API server. Stores ScheduledMachine CRs, Leases, Events, Secrets, and the CAPI Machine/bootstrap/infrastructure resources that 5-Spot creates.",
+      "interfaces": [
+        {
+          "unique-id": "kube-api-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 6443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "service-capi-core",
+      "node-type": "service",
+      "name": "Cluster API Core Controller",
+      "description": "Upstream CAPI controller that reconciles Machine objects created by 5-Spot and orchestrates bootstrap and infrastructure provider handoff."
+    },
+    {
+      "unique-id": "service-capi-bootstrap-provider",
+      "node-type": "service",
+      "name": "CAPI Bootstrap Provider",
+      "description": "Bootstrap provider (default example: k0smotron K0sWorkerConfig) that produces cloud-init / bootstrap data for joining the workload cluster. 5-Spot is provider-agnostic via bootstrap.cluster.x-k8s.io wildcards."
+    },
+    {
+      "unique-id": "service-capi-infrastructure-provider",
+      "node-type": "service",
+      "name": "CAPI Infrastructure Provider",
+      "description": "Infrastructure provider (default example: k0smotron RemoteMachine) that provisions the underlying compute. For RemoteMachine, this means SSHing to a pre-existing physical node and installing k0s."
+    },
+    {
+      "unique-id": "network-physical-node",
+      "node-type": "network",
+      "name": "Physical Target Node",
+      "description": "Bare-metal or VM host declared in ScheduledMachine.spec.infrastructureSpec (address/port/user). Reached by the CAPI infrastructure provider over SSH.",
+      "interfaces": [
+        {
+          "unique-id": "physical-node-ssh",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/host-port.json",
+          "config": {
+            "port": 22,
+            "protocol": "TCP"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "service-prometheus",
+      "node-type": "service",
+      "name": "Prometheus",
+      "description": "Monitoring-namespace Prometheus scraping controller metrics (five_spot_up and reconciliation metrics) every scrape interval."
+    },
+    {
+      "unique-id": "service-kubelet",
+      "node-type": "service",
+      "name": "Kubelet",
+      "description": "Node-local kubelet performing HTTP liveness (/healthz) and readiness (/readyz) probes against the controller."
+    }
+  ],
+
+  "relationships": [
+    {
+      "unique-id": "rel-mgmt-cluster-contains-controller",
+      "description": "The management cluster hosts the 5-Spot controller, the Kubernetes API, and the CAPI provider controllers.",
+      "relationship-type": {
+        "deployed-in": {
+          "container": "ecosystem-management-cluster",
+          "nodes": [
+            "service-five-spot-controller",
+            "service-kubernetes-api",
+            "service-capi-core",
+            "service-capi-bootstrap-provider",
+            "service-capi-infrastructure-provider"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-workload-cluster-contains-node",
+      "description": "When a schedule is active, the physical node becomes a worker in the CAPI-managed workload cluster.",
+      "relationship-type": {
+        "deployed-in": {
+          "container": "ecosystem-workload-cluster",
+          "nodes": ["network-physical-node"]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-operator-authors-cr",
+      "description": "The platform operator authors and applies ScheduledMachine custom resources.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "actor-platform-operator",
+          "nodes": ["data-asset-scheduledmachine-cr"]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-operator-kubectl",
+      "description": "Operator applies manifests via kubectl to the Kubernetes API.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "actor-platform-operator" },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-controller-kube-api",
+      "description": "Controller watches ScheduledMachine CRs and creates CAPI Machine, bootstrap, and infrastructure resources via the Kubernetes API. Also renews the leader-election Lease.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-five-spot-controller" },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "boundary-protection-egress": {
+          "description": "Controller NetworkPolicy restricts egress to port 6443 (kube-apiserver) and DNS only; all other egress denied to prevent exfiltration.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["SC-7"],
+                "evidence": "deploy/deployment/networkpolicy.yaml"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-capi-core-reconciles-machine",
+      "description": "CAPI core reads Machine objects created by 5-Spot from the API server and drives bootstrap + infrastructure reconciliation.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-capi-core" },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-infra-provider-ssh-node",
+      "description": "Infrastructure provider (e.g. k0smotron RemoteMachine) SSHes to the declared address to install k0s and join the workload cluster.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-capi-infrastructure-provider" },
+          "destination": {
+            "node": "network-physical-node",
+            "interfaces": ["physical-node-ssh"]
+          }
+        }
+      },
+      "protocol": "TCP"
+    },
+    {
+      "unique-id": "rel-prometheus-scrape",
+      "description": "Prometheus scrapes /metrics on port 8080; allowed only from the monitoring namespace by NetworkPolicy.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-prometheus" },
+          "destination": {
+            "node": "service-five-spot-controller",
+            "interfaces": ["five-spot-metrics"]
+          }
+        }
+      },
+      "protocol": "HTTP",
+      "controls": {
+        "boundary-protection-ingress": {
+          "description": "Only monitoring namespace may reach :8080 per NetworkPolicy ingress rules.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["SC-7", "AU-6"],
+                "evidence": "deploy/deployment/networkpolicy.yaml"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-kubelet-health",
+      "description": "Kubelet probes /healthz and /readyz on port 8081 for liveness and readiness.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-kubelet" },
+          "destination": {
+            "node": "service-five-spot-controller",
+            "interfaces": ["five-spot-health"]
+          }
+        }
+      },
+      "protocol": "HTTP"
+    },
+    {
+      "unique-id": "rel-cr-stored-in-api",
+      "description": "ScheduledMachine custom resources are persisted by the Kubernetes API server in etcd.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "service-kubernetes-api",
+          "nodes": ["data-asset-scheduledmachine-cr"]
+        }
+      }
+    }
+  ],
+
+  "flows": [
+    {
+      "unique-id": "flow-schedule-activation",
+      "name": "Schedule Activation (machine enters window)",
+      "description": "When the current time enters a ScheduledMachine's active window, 5-Spot creates the bootstrap + infrastructure resources and a CAPI Machine so that CAPI provisions the physical node and joins it to the workload cluster.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-operator-authors-cr",
+          "description": "Operator applies a ScheduledMachine CR declaring schedule, bootstrap spec, infrastructure spec, and cluster name."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "Controller watch observes the CR; scheduler evaluates daysOfWeek/hoursOfDay against current time in the configured timezone and finds it in window.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "Controller creates K0sWorkerConfig (bootstrap), RemoteMachine (infra), and a CAPI Machine referencing both; phase -> Scheduled."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-capi-core-reconciles-machine",
+          "description": "CAPI core reconciles the Machine and hands off to bootstrap + infra providers."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-infra-provider-ssh-node",
+          "description": "Infrastructure provider SSHes to the physical node, installs k0s with bootstrap data, and joins the workload cluster; phase -> Active."
+        }
+      ],
+      "controls": {
+        "graceful-lifecycle": {
+          "description": "Controller records Kubernetes Events at every phase transition for auditability.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AU-2", "AU-3"],
+                "evidence": "src/reconcilers/scheduled_machine.rs"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "flow-schedule-deactivation",
+      "name": "Schedule Deactivation (machine exits window or kill switch)",
+      "description": "When the window closes (or killSwitch is set), the controller cordons the node, evicts pods within nodeDrainTimeout, then deletes the CAPI Machine so the infra provider tears it down.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "Scheduler tick detects out-of-window (or killSwitch=true); phase -> Removing; gracefulShutdownTimeout starts."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "Controller cordons the node (patch spec.unschedulable=true) and creates pod eviction requests, respecting nodeDrainTimeout."
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "Controller deletes the CAPI Machine (and associated bootstrap/infra objects if owned); phase -> Inactive / UnScheduled."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-capi-core-reconciles-machine",
+          "description": "CAPI core propagates deletion to providers; physical node is removed from the workload cluster."
+        }
+      ],
+      "controls": {
+        "graceful-shutdown": {
+          "description": "Drain respects configured gracefulShutdownTimeout and nodeDrainTimeout so that workloads are evicted cleanly before node removal.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["CP-10", "SC-5"],
+                "evidence": "src/reconcilers/scheduled_machine.rs"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+
+  "controls": {
+    "supply-chain-scanning": {
+      "description": "Repository is scanned by Snyk (SAST), Aqua (container image), and Gitleaks (secrets); SPDX license identifiers on source files.",
+      "requirements": [
+        {
+          "requirement-url": "https://csrc.nist.gov/pubs/sp/800/218/final",
+          "config": {
+            "framework": "NIST SP 800-218 SSDF",
+            "controls": ["PO.5", "PS.1", "PW.4"],
+            "evidence": "README.md Security & Compliance section"
+          }
+        }
+      ]
+    }
+  },
+
+  "metadata": {
+    "project": "5-Spot Machine Scheduler",
+    "repository": "https://github.com/finos/5-spot",
+    "finos-stage": "incubating",
+    "license": "Apache-2.0",
+    "calm-schema-version": "1.2",
+    "crd": {
+      "group": "5spot.finos.org",
+      "version": "v1alpha1",
+      "kind": "ScheduledMachine"
+    }
+  },
+
+  "adrs": []
+}

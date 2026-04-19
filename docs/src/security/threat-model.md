@@ -180,7 +180,7 @@ flowchart LR
 |---|---|---|---|---|
 | D1 | Attacker creates thousands of ScheduledMachines to overwhelm the controller reconciliation queue | Medium | Medium | **Partially mitigated** — Kubernetes resource quotas and admission webhooks can cap CR count; controller has CPU/memory limits |
 | D2 | **Finalizer hang** — drain operation never completes, blocking namespace deletion indefinitely | Medium | High | **Mitigated (2026-04-08)** — `tokio::time::timeout(600s)` wraps finalizer cleanup |
-| D3 | Crafted cron expression causes ReDoS when cron evaluation is implemented | Low | Medium | **Residual risk** — cron is not yet implemented; must use a safe parser when added |
+| D3 | Attacker crafts extremely long `daysOfWeek`/`hoursOfDay` arrays to slow admission validation | Low | Low | **Mitigated** — admission policy validates each item individually; Kubernetes limits CR size |
 | D4 | User triggers kill switch repeatedly causing rapid machine add/remove cycles (thrashing) | Low | Medium | Accepted — kill switch is write-once-by-design; no automatic reactivation |
 
 #### Elevation of Privilege
@@ -256,7 +256,7 @@ flowchart LR
 | Control | Recommendation |
 |---|---|
 | Kubernetes ResourceQuota | Limit `ScheduledMachine` count per namespace (e.g., max 50) |
-| `ValidatingAdmissionPolicy` ✅ deployed 2026-04-08 | Validates `bootstrapSpec.apiVersion`, `infrastructureSpec.apiVersion`, `kind` fields, duration format, cron XOR days/hours, and day/hour item format at admission time — see `deploy/admission/` |
+| `ValidatingAdmissionPolicy` ✅ deployed 2026-04-08 | Validates `bootstrapSpec.apiVersion`, `infrastructureSpec.apiVersion`, `kind` fields, duration format, and day/hour item format at admission time — see `deploy/admission/` |
 | NetworkPolicy | Restrict controller pod egress to Kubernetes API server only |
 | Audit logging | Enable API server audit log at `RequestResponse` level for `scheduledmachines` resources |
 | RBAC for SM creation | Only grant `create` on `scheduledmachines` to trusted identities; do not grant to end users directly |
@@ -297,13 +297,6 @@ x-kubernetes-validations:
 
 ---
 
-### MEDIUM — Cron expression ReDoS (future)
-
-**Threat:** Cron evaluation is not yet implemented. When added, a maliciously crafted cron string could cause catastrophic backtracking in a naive regex-based parser.
-
-**Recommendation:** Use the `cron` crate (not regex-based) and enforce a maximum cron string length of 100 characters at the CRD level before implementation.
-
----
 
 ### LOW — Kill switch audit trail
 
@@ -340,4 +333,3 @@ The following conditions are assumed to be true for this threat model to hold:
 - [Machine Lifecycle](../concepts/machine-lifecycle.md)
 - [RBAC Configuration](../../deploy/deployment/rbac/clusterrole.yaml)
 - [API Reference](../reference/api.md)
-- [Project Roadmap](../../docs/roadmaps/project-roadmap-2026.md)

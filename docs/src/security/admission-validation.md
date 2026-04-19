@@ -85,16 +85,15 @@ resource) in the order listed.
 | 1 | `spec.clusterName` | Must not be empty | `spec.clusterName must not be empty` |
 | 2 | `spec.gracefulShutdownTimeout` | Must match `^\d+[smh]$` | `must be a duration string such as '5m', '30s', or '1h'` |
 | 3 | `spec.nodeDrainTimeout` | Must match `^\d+[smh]$` | `must be a duration string such as '5m', '30s', or '1h'` |
-| 4 | `spec.schedule.cron` + `daysOfWeek`/`hoursOfDay` | If `cron` is set, `daysOfWeek` and `hoursOfDay` must both be empty | `cron is mutually exclusive with daysOfWeek and hoursOfDay` |
-| 5 | `spec.schedule` | If `cron` is absent, both `daysOfWeek` and `hoursOfDay` must be non-empty | `both daysOfWeek and hoursOfDay must be non-empty` |
-| 6 | `spec.schedule.daysOfWeek[]` | Each item matches `mon\|tue\|…` with optional range/combo | `must be day names or ranges (e.g. 'mon', 'mon-fri', 'mon-wed,fri-sun')` |
-| 7 | `spec.schedule.hoursOfDay[]` | Each item matches `\d{1,2}(-\d{1,2})?` with optional combo | `must be hours or ranges (e.g. '9', '9-17', '0-9,18-23')` |
-| 8 | `spec.bootstrapSpec.apiVersion` | Must contain `/` — core API versions (`v1`) are rejected | `must use a namespaced API group` |
-| 9 | `spec.bootstrapSpec.apiVersion` | Group must be `bootstrap.cluster.x-k8s.io` or `k0smotron.io` | `must be from an allowed group` |
-| 10 | `spec.bootstrapSpec.kind` | Must not be empty | `spec.bootstrapSpec.kind must not be empty` |
-| 11 | `spec.infrastructureSpec.apiVersion` | Must contain `/` | `must use a namespaced API group` |
-| 12 | `spec.infrastructureSpec.apiVersion` | Group must be `infrastructure.cluster.x-k8s.io` or `k0smotron.io` | `must be from an allowed group` |
-| 13 | `spec.infrastructureSpec.kind` | Must not be empty | `spec.infrastructureSpec.kind must not be empty` |
+| 4 | `spec.schedule` | Both `daysOfWeek` and `hoursOfDay` must be non-empty | `both daysOfWeek and hoursOfDay must be non-empty` |
+| 5 | `spec.schedule.daysOfWeek[]` | Each item matches `mon\|tue\|…` with optional range/combo | `must be day names or ranges (e.g. 'mon', 'mon-fri', 'mon-wed,fri-sun')` |
+| 6 | `spec.schedule.hoursOfDay[]` | Each item matches `\d{1,2}(-\d{1,2})?` with optional combo | `must be hours or ranges (e.g. '9', '9-17', '0-9,18-23')` |
+| 7 | `spec.bootstrapSpec.apiVersion` | Must contain `/` — core API versions (`v1`) are rejected | `must use a namespaced API group` |
+| 8 | `spec.bootstrapSpec.apiVersion` | Group must be `bootstrap.cluster.x-k8s.io` or `k0smotron.io` | `must be from an allowed group` |
+| 9 | `spec.bootstrapSpec.kind` | Must not be empty | `spec.bootstrapSpec.kind must not be empty` |
+| 10 | `spec.infrastructureSpec.apiVersion` | Must contain `/` | `must use a namespaced API group` |
+| 11 | `spec.infrastructureSpec.apiVersion` | Group must be `infrastructure.cluster.x-k8s.io` or `k0smotron.io` | `must be from an allowed group` |
+| 12 | `spec.infrastructureSpec.kind` | Must not be empty | `spec.infrastructureSpec.kind must not be empty` |
 
 ### Rule details
 
@@ -115,42 +114,26 @@ gracefulShutdownTimeout: "5 m"  # ❌  rejected — space not allowed
 gracefulShutdownTimeout: "five" # ❌  rejected — not a number
 ```
 
-#### Rules 4–5 — Cron XOR explicit windows
+#### Rule 4 — Schedule window must be complete
 
-`spec.schedule.cron` and the explicit `daysOfWeek`/`hoursOfDay` window are
-**mutually exclusive**.  When a cron expression is provided the controller
-ignores `daysOfWeek` and `hoursOfDay`; rule 4 rejects specs that set both
-to prevent silent data loss.  Rule 5 ensures that when cron is absent, the
-explicit window is complete — a schedule with only days and no hours (or
-vice versa) is not meaningful.
+Both `daysOfWeek` and `hoursOfDay` must be non-empty. A schedule with only
+days and no hours (or vice versa) is not meaningful.
 
 ```yaml
-# ✅ Valid — cron only
-schedule:
-  cron: "0 9-17 * * 1-5"
-  timezone: "America/Toronto"
-  enabled: true
-
-# ✅ Valid — explicit window
+# ✅ Valid
 schedule:
   daysOfWeek: ["mon-fri"]
   hoursOfDay: ["9-17"]
   timezone: "America/Toronto"
   enabled: true
 
-# ❌ Rejected by rule 4 — cron + explicit window
-schedule:
-  cron: "0 9-17 * * 1-5"
-  daysOfWeek: ["mon-fri"]     # must be empty when cron is set
-  hoursOfDay: ["9-17"]
-
-# ❌ Rejected by rule 5 — explicit window incomplete
+# ❌ Rejected by rule 4 — hoursOfDay missing
 schedule:
   daysOfWeek: ["mon-fri"]
-  # hoursOfDay missing — rule 5 rejects this
+  # hoursOfDay missing — rule 4 rejects this
 ```
 
-#### Rules 8–9, 11–12 — Provider API group allowlist
+#### Rules 7–8, 10–11 — Provider API group allowlist
 
 The `bootstrapSpec.apiVersion` and `infrastructureSpec.apiVersion` fields
 must reference an explicitly allowed CAPI provider group.  This mirrors the
@@ -165,7 +148,7 @@ cannot use them to create arbitrary Kubernetes resources (e.g.,
 | k0smotron | `k0smotron.io/` | `k0smotron.io/` |
 
 To add a new provider, update both the `ValidatingAdmissionPolicy`
-(rules 9 and 12) and the constants in `src/constants.rs`
+(rules 8 and 11) and the constants in `src/constants.rs`
 (`ALLOWED_BOOTSTRAP_API_GROUPS`, `ALLOWED_INFRASTRUCTURE_API_GROUPS`).
 
 ---
@@ -379,21 +362,20 @@ The ScheduledMachine "test-bad-apigroup" is invalid:
   group: bootstrap.cluster.x-k8s.io or k0smotron.io
 ```
 
-### Test cron + explicit window conflict (rule 4)
+### Test incomplete schedule window (rule 4)
 
 ```bash
 kubectl apply -f - <<'EOF'
 apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
-  name: test-cron-conflict
+  name: test-incomplete-schedule
   namespace: default
 spec:
   clusterName: my-cluster
   schedule:
-    cron: "0 9-17 * * 1-5"
-    daysOfWeek: ["mon-fri"]     # ❌ must be empty when cron is set
-    hoursOfDay: ["9-17"]
+    daysOfWeek: ["mon-fri"]
+    # hoursOfDay missing — ❌ rejected by rule 4
     timezone: "UTC"
     enabled: true
   bootstrapSpec:
@@ -412,9 +394,8 @@ EOF
 Expected error:
 
 ```
-The ScheduledMachine "test-cron-conflict" is invalid:
-  spec.schedule: Invalid value: ...: cron is mutually exclusive with
-  daysOfWeek and hoursOfDay — set one or the other, not both
+The ScheduledMachine "test-incomplete-schedule" is invalid:
+  spec.schedule: Invalid value: ...: both daysOfWeek and hoursOfDay must be non-empty
 ```
 
 ---
@@ -472,5 +453,4 @@ If the command returns results, VAP is available.
 - [Threat Model](threat-model.md) — full STRIDE analysis and residual risks
 - [API Reference](../reference/api.md) — complete `ScheduledMachine` field reference
 - [CAPI Integration](../advanced/capi-integration.md) — bootstrap and infrastructure provider details
-- [Compliance Roadmap](../../roadmaps/compliance-sox-basel3-nist.md) — NIST CM-5 and other regulatory control status
 - Kubernetes documentation: [ValidatingAdmissionPolicy](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/)

@@ -55,28 +55,16 @@ spec:
 
 ### schedule
 
-Defines when the machine should be active. Supports either cron expressions or day/hour ranges.
+Defines when the machine should be active using day and hour ranges.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `cron` | `string` | No | - | Cron expression (takes precedence over day/hour ranges) |
 | `daysOfWeek` | `[]string` | No* | `[]` | Days when active. Supports ranges and lists. |
 | `hoursOfDay` | `[]string` | No* | `[]` | Hours when active (0-23). Supports ranges. |
 | `timezone` | `string` | No | `UTC` | IANA timezone for schedule evaluation. |
 | `enabled` | `bool` | No | `true` | Whether the schedule is enabled. |
 
-*Either `cron` OR `daysOfWeek`/`hoursOfDay` must be specified.
-
-#### Cron Expression
-
-When a cron expression is provided, it takes precedence over `daysOfWeek`/`hoursOfDay`:
-
-```yaml
-schedule:
-  cron: "0 9-17 * * 1-5"  # Mon-Fri 9am-5pm
-  timezone: America/New_York
-  enabled: true
-```
+*At least one of `daysOfWeek` or `hoursOfDay` must be non-empty.
 
 #### Day Format
 

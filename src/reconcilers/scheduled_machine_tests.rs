@@ -16,7 +16,6 @@ mod tests {
     fn create_test_spec() -> crate::crd::ScheduledMachineSpec {
         crate::crd::ScheduledMachineSpec {
             schedule: crate::crd::ScheduleSpec {
-                cron: None,
                 days_of_week: vec!["mon-fri".to_string()],
                 hours_of_day: vec!["9-17".to_string()],
                 timezone: "UTC".to_string(),
@@ -48,7 +47,6 @@ mod tests {
     #[test]
     fn test_evaluate_schedule_disabled() {
         let schedule = crate::crd::ScheduleSpec {
-            cron: None,
             days_of_week: vec!["mon-fri".to_string()],
             hours_of_day: vec!["9-17".to_string()],
             timezone: "UTC".to_string(),
@@ -62,7 +60,6 @@ mod tests {
     #[test]
     fn test_evaluate_schedule_invalid_timezone() {
         let schedule = crate::crd::ScheduleSpec {
-            cron: None,
             days_of_week: vec!["mon-fri".to_string()],
             hours_of_day: vec!["9-17".to_string()],
             timezone: "Invalid/Timezone".to_string(),
@@ -737,28 +734,8 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_evaluate_schedule_cron_not_implemented() {
-        let schedule = crate::crd::ScheduleSpec {
-            cron: Some("0 9 * * 1-5".to_string()),
-            days_of_week: vec![],
-            hours_of_day: vec![],
-            timezone: "UTC".to_string(),
-            enabled: true,
-        };
-
-        let result = evaluate_schedule(&schedule, None);
-        assert!(result.is_err(), "Cron expression should return error");
-        let err_msg = format!("{:?}", result.unwrap_err());
-        assert!(
-            err_msg.contains("Cron") || err_msg.contains("cron"),
-            "Error should mention cron"
-        );
-    }
-
-    #[test]
     fn test_evaluate_schedule_empty_days_and_hours() {
         let schedule = crate::crd::ScheduleSpec {
-            cron: None,
             days_of_week: vec![],
             hours_of_day: vec![],
             timezone: "UTC".to_string(),

@@ -49,5 +49,3 @@ A STRIDE-based analysis of the threats facing 5-Spot and the mitigations in plac
 | **NIST 800-53 CM-5** | ✅ ValidatingAdmissionPolicy deployed | — |
 | **NIST 800-53 AU-2/AU-3** | ✅ Phase transition events | Actor tracking |
 | **NIST 800-53 SC-28** | ❌ Inline bootstrap credentials | Secret resolution (P3-1) |
-
-See the [compliance roadmap](../../roadmaps/compliance-sox-basel3-nist.md) for the full control mapping and remediation plan.

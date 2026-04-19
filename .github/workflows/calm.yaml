@@ -1,0 +1,229 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Reusable workflow wrapping the FINOS CALM CLI (@finos/calm-cli).
+#
+# Runs one of the CLI sub-commands against a CALM architecture / pattern in
+# this repo. Intended to be invoked via `workflow_call` from other workflows
+# (e.g. docs.yaml can call this with command=template to regenerate Mermaid
+# diagrams from docs/architecture/calm/architecture.json).
+#
+# Example caller:
+#
+#   jobs:
+#     mermaid:
+#       uses: ./.github/workflows/calm.yaml
+#       with:
+#         command: template
+#         architecture: docs/architecture/calm/architecture.json
+#         template-dir: docs/architecture/calm/templates/mermaid
+#         output: docs/src/architecture/diagrams
+#         upload-artifact: true
+#         artifact-name: calm-mermaid
+
+name: CALM
+
+on:
+  workflow_call:
+    inputs:
+      command:
+        description: "CALM CLI sub-command: validate | generate | template | docify"
+        required: true
+        type: string
+
+      cli-version:
+        description: "Version of @finos/calm-cli to install (npm semver)."
+        required: false
+        type: string
+        default: "1.37.0"
+
+      node-version:
+        description: "Node.js version used to run the CLI."
+        required: false
+        type: string
+        default: "20"
+
+      working-directory:
+        description: "Working directory the CLI runs in."
+        required: false
+        type: string
+        default: "."
+
+      architecture:
+        description: "Path to the CALM architecture JSON (-a). Required for template, docify, validate."
+        required: false
+        type: string
+        default: ""
+
+      pattern:
+        description: "Path or URL to a CALM pattern file (-p). Required for generate and validate."
+        required: false
+        type: string
+        default: ""
+
+      output:
+        description: "Output path (-o). File for generate/validate, directory for template/docify."
+        required: false
+        type: string
+        default: ""
+
+      template:
+        description: "Path to a single .hbs or .md template file (-t). Used by template and docify."
+        required: false
+        type: string
+        default: ""
+
+      template-dir:
+        description: "Path to a directory of .hbs/.md templates (-d). Used by template and docify."
+        required: false
+        type: string
+        default: ""
+
+      bundle:
+        description: "Path to a template bundle directory (-b). Used by template."
+        required: false
+        type: string
+        default: ""
+
+      url-to-local-file-mapping:
+        description: "Path to a JSON file mapping external URLs to local paths (-u)."
+        required: false
+        type: string
+        default: ""
+
+      schema-directory:
+        description: "Path to a directory of CALM meta schemas (-s). Used by generate and validate."
+        required: false
+        type: string
+        default: ""
+
+      calm-hub-url:
+        description: "URL to a CalmHub instance (-c). Used by generate and validate."
+        required: false
+        type: string
+        default: ""
+
+      clear-output-directory:
+        description: "For template/docify: delete output directory before writing."
+        required: false
+        type: boolean
+        default: false
+
+      scaffold:
+        description: "For docify: generate scaffold only (no final render)."
+        required: false
+        type: boolean
+        default: false
+
+      strict:
+        description: "For validate: fail on warnings as well as errors."
+        required: false
+        type: boolean
+        default: false
+
+      format:
+        description: "For validate: output format (json | junit | pretty)."
+        required: false
+        type: string
+        default: "json"
+
+      verbose:
+        description: "Enable verbose CLI logging (-v)."
+        required: false
+        type: boolean
+        default: false
+
+      extra-args:
+        description: "Additional raw arguments appended to the CLI invocation."
+        required: false
+        type: string
+        default: ""
+
+      upload-artifact:
+        description: "Upload the output path as a workflow artifact."
+        required: false
+        type: boolean
+        default: false
+
+      artifact-name:
+        description: "Artifact name when upload-artifact is true."
+        required: false
+        type: string
+        default: "calm-output"
+
+      artifact-retention-days:
+        description: "Retention days for the uploaded artifact."
+        required: false
+        type: number
+        default: 30
+
+    outputs:
+      output-path:
+        description: "Resolved output path the CLI wrote to (empty if --output not supplied)."
+        value: ${{ jobs.calm.outputs.output-path }}
+
+permissions:
+  contents: read
+
+jobs:
+  calm:
+    name: CALM ${{ inputs.command }}
+    runs-on: ubuntu-latest
+    outputs:
+      output-path: ${{ steps.run.outputs.output-path }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install @finos/calm-cli
+        run: npm install -g "@finos/calm-cli@${{ inputs.cli-version }}"
+
+      - name: Show CLI version
+        run: calm --version
+
+      - name: Run CALM CLI
+        id: run
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          CMD: ${{ inputs.command }}
+          ARCH: ${{ inputs.architecture }}
+          PATTERN: ${{ inputs.pattern }}
+          OUTPUT: ${{ inputs.output }}
+          TEMPLATE: ${{ inputs.template }}
+          TEMPLATE_DIR: ${{ inputs.template-dir }}
+          BUNDLE: ${{ inputs.bundle }}
+          URL_MAP: ${{ inputs.url-to-local-file-mapping }}
+          SCHEMA_DIR: ${{ inputs.schema-directory }}
+          HUB_URL: ${{ inputs.calm-hub-url }}
+          CLEAR_OUT: ${{ inputs.clear-output-directory }}
+          SCAFFOLD: ${{ inputs.scaffold }}
+          STRICT: ${{ inputs.strict }}
+          FORMAT: ${{ inputs.format }}
+          VERBOSE: ${{ inputs.verbose }}
+          EXTRA: ${{ inputs.extra-args }}
+        run: |
+          set -euo pipefail
+
+          # Build CLI args with the shared script (unit-tested via bats).
+          mapfile -t args < <("${GITHUB_WORKSPACE}/.github/scripts/calm-args.sh")
+
+          echo "::group::calm ${CMD} ${args[*]}"
+          calm "${CMD}" "${args[@]}"
+          echo "::endgroup::"
+
+          echo "output-path=${OUTPUT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload output artifact
+        if: ${{ inputs.upload-artifact && inputs.output != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.working-directory }}/${{ inputs.output }}
+          retention-days: ${{ inputs.artifact-retention-days }}
+          if-no-files-found: error

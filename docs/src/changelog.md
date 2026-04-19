@@ -37,6 +37,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Event-driven architecture
 - Kubernetes-native status conditions
 
-## Future Releases
-
-See [Project Roadmap](./roadmaps/project-roadmap-2026.md) for planned features.

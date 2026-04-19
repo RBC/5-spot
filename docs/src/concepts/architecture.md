@@ -74,7 +74,6 @@ Implements the reconciliation loop:
 
 Evaluates time-based schedules:
 
-- Parses cron expressions (when specified)
 - Parses day ranges (e.g., `mon-fri`, with wrap-around support)
 - Parses hour ranges (e.g., `9-17`, with wrap-around support)
 - Handles timezone conversions using IANA timezone database

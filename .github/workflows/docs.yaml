@@ -39,14 +39,61 @@ env:
   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: cc
 
 jobs:
+  # Validate the CALM architecture document before building the docs site.
+  # Uses the reusable CALM workflow (see .github/workflows/CALM.md).
+  # A broken architecture means broken diagrams downstream, so this is a
+  # hard gate on every docs build.
+  calm-validate:
+    name: ✅ Validate CALM architecture
+    uses: ./.github/workflows/calm.yaml
+    with:
+      command: validate
+      architecture: docs/architecture/calm/architecture.json
+      format: pretty
+      verbose: true
+
+  # Render one Mermaid flowchart per CALM flow into docs/src/architecture/.
+  # The rendered markdown is uploaded as an artifact and consumed by the
+  # build job below. The output directory is gitignored — the file only
+  # exists at build time.
+  calm-diagrams:
+    name: 🧱 Render CALM Mermaid diagrams
+    uses: ./.github/workflows/calm.yaml
+    with:
+      command: template
+      architecture: docs/architecture/calm/architecture.json
+      template-dir: docs/architecture/calm/templates/mermaid
+      output: docs/src/architecture
+      clear-output-directory: true
+      verbose: true
+      upload-artifact: true
+      artifact-name: calm-mermaid
+      artifact-retention-days: 7
+
   build:
     name: 📚 Build Documentation
+    needs: [calm-validate, calm-diagrams]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history for git-revision-date-localized plugin
+
+      - name: Download rendered CALM diagrams
+        uses: actions/download-artifact@v4
+        with:
+          name: calm-mermaid
+          path: docs/src/architecture
+
+      - name: Strip .hbs suffix from rendered files
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in docs/src/architecture/*.hbs; do
+            mv "$f" "${f%.hbs}"
+          done
+          ls -la docs/src/architecture
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -91,6 +138,10 @@ jobs:
             ${{ runner.os }}-cargo-docs-
 
       - name: Build documentation
+        # CALM diagrams were rendered by the calm-diagrams job and downloaded
+        # above, so skip the local re-render via the Makefile.
+        env:
+          SKIP_CALM_DIAGRAMS: "1"
         run: make docs
 
       - name: Check for broken links

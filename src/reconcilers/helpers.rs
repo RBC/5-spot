@@ -8,7 +8,7 @@
 //!
 //! ## Organisation
 //! - **Resource distribution** — consistent hashing for multi-instance deployments
-//! - **Schedule evaluation** — timezone-aware day/hour range and cron matching
+//! - **Schedule evaluation** — timezone-aware day/hour range matching
 //! - **Finalizer management** — add, check, and remove the 5-spot finalizer
 //! - **Kill switch** — immediate machine removal path
 //! - **Grace period** — elapsed-time check against the shutdown timeout
@@ -111,15 +111,6 @@ pub fn evaluate_schedule(
 ) -> Result<bool, ReconcilerError> {
     if !schedule.enabled {
         return Ok(false);
-    }
-
-    // If using cron expression, evaluate it
-    if let Some(cron_expr) = &schedule.cron {
-        // TODO: Implement cron expression evaluation
-        // For now, return an error indicating cron is not yet supported
-        return Err(ReconcilerError::ScheduleError(format!(
-            "Cron expression evaluation not yet implemented: {cron_expr}"
-        )));
     }
 
     let now = check_time.unwrap_or_else(Utc::now);

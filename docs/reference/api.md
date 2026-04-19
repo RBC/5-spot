@@ -52,9 +52,6 @@ spec:
 
 Machine scheduling configuration.
 
-- **cron** (optional, string): Cron expression (e.g., `"0 9-17 * * 1-5"`).
-  Takes precedence over `daysOfWeek`/`hoursOfDay` when specified.
-
 - **daysOfWeek** (optional, array of strings, default: `[]`): Days when machine should be active.
   Supports ranges (`mon-fri`) and combinations (`mon-wed,fri-sun`).
 
@@ -66,7 +63,7 @@ Machine scheduling configuration.
 
 - **enabled** (optional, boolean, default: `true`): Whether the schedule is active.
 
-*Either `cron` OR non-empty `daysOfWeek`/`hoursOfDay` must be specified.*
+*At least one of `daysOfWeek` or `hoursOfDay` must be non-empty.*
 
 #### clusterName
 

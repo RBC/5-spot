@@ -1,7 +1,13 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit
+.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit
+
+# CALM (FINOS Common Architecture Language Model) configuration
+CALM_CLI_VERSION ?= 1.37.0
+CALM_ARCH        := docs/architecture/calm/architecture.json
+CALM_TEMPLATES   := docs/architecture/calm/templates/mermaid
+CALM_DIAGRAMS_OUT := docs/src/architecture
 
 # Image configuration
 REGISTRY ?= ghcr.io
@@ -156,20 +162,48 @@ run-local: ## Run operator locally
 
 crds: ## Generate CRD YAML files from Rust types
 	@echo "Generating CRD YAML files from src/crd.rs..."
-	@cargo run --bin crdgen > deploy/crds/scheduledmachine.yaml
+	@cargo run --quiet --bin crdgen > deploy/crds/scheduledmachine.yaml
 	@echo "✓ CRD YAML file generated: deploy/crds/scheduledmachine.yaml"
 
 crddoc: ## Generate API documentation from CRD types
 	@echo "Generating API documentation..."
-	@cargo run --bin crddoc > docs/src/reference/api.md
+	@cargo run --quiet --bin crddoc > docs/src/reference/api.md
 	@echo "✓ API documentation generated: docs/src/reference/api.md"
 
 # ============================================================
 # Documentation
 # ============================================================
 
+calm-diagrams: ## Render CALM flow diagrams (Mermaid) into docs/src/architecture/
+	@if [ "$(SKIP_CALM_DIAGRAMS)" = "1" ]; then \
+	  echo "SKIP_CALM_DIAGRAMS=1 — using existing files in $(CALM_DIAGRAMS_OUT)"; \
+	  for f in flows.md system.md; do \
+	    test -f $(CALM_DIAGRAMS_OUT)/$$f || { echo "Error: $(CALM_DIAGRAMS_OUT)/$$f missing"; exit 1; }; \
+	  done; \
+	else \
+	  command -v npx >/dev/null 2>&1 || { echo "Error: npx not found. Install Node.js from https://nodejs.org"; exit 1; }; \
+	  echo "Rendering CALM diagrams via @finos/calm-cli@$(CALM_CLI_VERSION)..."; \
+	  mkdir -p $(CALM_DIAGRAMS_OUT); \
+	  npx --yes @finos/calm-cli@$(CALM_CLI_VERSION) template \
+	    -a $(CALM_ARCH) \
+	    -d $(CALM_TEMPLATES) \
+	    -o $(CALM_DIAGRAMS_OUT) \
+	    --clear-output-directory; \
+	  echo "Stripping .hbs suffix from rendered files..."; \
+	  for f in $(CALM_DIAGRAMS_OUT)/*.hbs; do \
+	    [ -e "$$f" ] || continue; \
+	    mv "$$f" "$${f%.hbs}"; \
+	  done; \
+	fi
+
+calm-validate: ## Validate the CALM architecture against the meta-schema
+	@command -v npx >/dev/null 2>&1 || { echo "Error: npx not found. Install Node.js from https://nodejs.org"; exit 1; }
+	@npx --yes @finos/calm-cli@$(CALM_CLI_VERSION) validate \
+	  -a $(CALM_ARCH) \
+	  -f pretty
+
 docs: export PATH := $(HOME)/.local/bin:$(HOME)/.cargo/bin:$(PATH)
-docs: ## Build all documentation (MkDocs + rustdoc + CRD API reference)
+docs: calm-diagrams ## Build all documentation (MkDocs + rustdoc + CRD API reference + CALM diagrams)
 	@echo "Building all documentation..."
 	@echo "Checking Poetry installation..."
 	@command -v poetry >/dev/null 2>&1 || { echo "Error: Poetry not found. Install with: curl -sSL https://install.python-poetry.org | python3 -"; exit 1; }
@@ -177,7 +211,7 @@ docs: ## Build all documentation (MkDocs + rustdoc + CRD API reference)
 	@echo "Ensuring documentation dependencies are installed..."
 	@cd docs && poetry install --no-interaction --quiet
 	@echo "Generating CRD API reference documentation..."
-	@cargo run --bin crddoc > docs/src/reference/api.md
+	@cargo run --quiet --bin crddoc > docs/src/reference/api.md
 	@echo "Building rustdoc API documentation..."
 	@cargo doc --no-deps --all-features
 	@echo "Building MkDocs documentation..."

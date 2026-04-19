@@ -1,0 +1,165 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Tests for the reusable CALM workflow (.github/workflows/calm.yaml) and its
+# argument-building script (.github/scripts/calm-args.sh).
+#
+# Three layers:
+#   1. bats            — unit tests on the shell script.
+#   2. shellcheck      — static analysis on the shell script.
+#   3. integration     — invokes the reusable workflow end-to-end against the
+#                        checked-in architecture fixture.
+#
+# A separate job exercises the negative path (unknown command must fail).
+
+name: CALM (tests)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/calm.yaml'
+      - '.github/workflows/calm-test.yaml'
+      - '.github/scripts/calm-args.sh'
+      - '.github/scripts/calm-args.bats'
+      - 'docs/architecture/calm/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/calm.yaml'
+      - '.github/workflows/calm-test.yaml'
+      - '.github/scripts/calm-args.sh'
+      - '.github/scripts/calm-args.bats'
+      - 'docs/architecture/calm/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Unit: bats tests on the arg-building script ─────────────────────────────
+  bats:
+    name: 🧪 bats (calm-args.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install bats-core
+        run: sudo apt-get update && sudo apt-get install -y bats
+
+      - name: Run bats suite
+        run: bats .github/scripts/calm-args.bats
+
+  # ── Static: shellcheck on the arg-building script ───────────────────────────
+  shellcheck:
+    name: 🔍 shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run shellcheck
+        run: shellcheck .github/scripts/calm-args.sh
+
+  # ── Integration: validate the checked-in CALM architecture ──────────────────
+  integration-validate:
+    name: ✅ integration — validate architecture
+    needs: [bats, shellcheck]
+    uses: ./.github/workflows/calm.yaml
+    with:
+      command: validate
+      architecture: docs/architecture/calm/architecture.json
+      format: pretty
+      verbose: true
+
+  # ── Integration: template rendering against a tiny inline fixture ───────────
+  #
+  # We render a minimal Handlebars template that enumerates node names. This
+  # exercises the `template` sub-command path (TEMPLATE_DIR + ARCH + OUTPUT +
+  # CLEAR_OUT) without requiring a full external bundle.
+  integration-template:
+    name: 🧱 integration — template (mermaid-style)
+    needs: [bats, shellcheck]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare inline template
+        run: |
+          mkdir -p /tmp/calm-tpl
+          cat > /tmp/calm-tpl/nodes.md.hbs <<'HBS'
+          # Nodes
+          {{#each nodes}}
+          - {{this.unique-id}} ({{this.node-type}})
+          {{/each}}
+          HBS
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install @finos/calm-cli
+        run: npm install -g "@finos/calm-cli@1.37.0"
+
+      - name: Render template via calm-args.sh + calm
+        env:
+          CMD: template
+          ARCH: docs/architecture/calm/architecture.json
+          TEMPLATE_DIR: /tmp/calm-tpl
+          OUTPUT: /tmp/calm-out
+          CLEAR_OUT: "true"
+          VERBOSE: "true"
+        run: |
+          set -euo pipefail
+          mapfile -t args < <(./.github/scripts/calm-args.sh)
+          calm template "${args[@]}"
+          ls -la /tmp/calm-out
+          # Sanity-check that at least one file was produced.
+          test -n "$(ls -A /tmp/calm-out)"
+
+  # ── Negative: unknown command must fail the script with exit 2 ──────────────
+  negative-unknown-command:
+    name: ❌ negative — unknown command
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Unknown command exits non-zero
+        shell: bash
+        run: |
+          set +e
+          CMD=deploy ./.github/scripts/calm-args.sh
+          rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::Expected non-zero exit for unknown command, got 0"
+            exit 1
+          fi
+          if [ "$rc" -ne 2 ]; then
+            echo "::error::Expected exit code 2, got $rc"
+            exit 1
+          fi
+          echo "OK: script exited with $rc as expected"
+
+  # ── Negative: CMD unset must fail ───────────────────────────────────────────
+  negative-missing-cmd:
+    name: ❌ negative — missing CMD
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Unset CMD exits non-zero
+        shell: bash
+        run: |
+          set +e
+          env -u CMD ./.github/scripts/calm-args.sh
+          rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::Expected non-zero exit when CMD is unset, got 0"
+            exit 1
+          fi
+          echo "OK: script exited with $rc as expected"

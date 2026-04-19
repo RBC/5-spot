@@ -4,48 +4,11 @@
 
 ## Schedule Options
 
-5-Spot supports two scheduling methods:
-
-1. **Cron Expressions** - Standard cron syntax for complex schedules
-2. **Day/Hour Ranges** - Simple range-based scheduling
-
-## Cron Expressions
-
-When a `cron` field is specified, it takes precedence over `daysOfWeek`/`hoursOfDay`.
-
-```yaml
-schedule:
-  cron: "0 9-17 * * 1-5"  # Mon-Fri 9am-5pm
-  timezone: America/New_York
-  enabled: true
-```
-
-### Cron Format
-
-```mermaid
-flowchart LR
-    A["<b>*</b><br/>minute<br/><i>0–59</i>"]
-    B["<b>*</b><br/>hour<br/><i>0–23</i>"]
-    C["<b>*</b><br/>day of month<br/><i>1–31</i>"]
-    D["<b>*</b><br/>month<br/><i>1–12</i>"]
-    E["<b>*</b><br/>day of week<br/><i>0–6, Sun–Sat</i>"]
-
-    A --- B --- C --- D --- E
-```
-
-### Cron Examples
-
-| Pattern | Description |
-|---------|-------------|
-| `0 9-17 * * 1-5` | Mon-Fri 9am-5pm |
-| `0 0-8,18-23 * * *` | Night shift (6pm-8am daily) |
-| `0 * * * 0,6` | All hours on weekends |
-| `0 6-22 * * 1-5` | Extended hours Mon-Fri |
-| `0 0 * * *` | Only at midnight |
+5-Spot schedules machines using day and hour ranges.
 
 ## Day/Hour Range Syntax
 
-For simpler schedules, use `daysOfWeek` and `hoursOfDay`:
+Use `daysOfWeek` and `hoursOfDay` to define when a machine should be active:
 
 ```yaml
 schedule:
@@ -206,15 +169,9 @@ When disabled:
 ### Business Hours (Mon-Fri, 9-5)
 
 ```yaml
-# Using day/hour ranges
 schedule:
   daysOfWeek: [mon-fri]
   hoursOfDay: [9-17]
-  timezone: America/New_York
-
-# Using cron
-schedule:
-  cron: "0 9-17 * * 1-5"
   timezone: America/New_York
 ```
 
@@ -230,15 +187,10 @@ schedule:
 ### Night Shift
 
 ```yaml
-# Using day/hour ranges (wrap-around)
+# Wrap-around hour ranges are supported
 schedule:
   daysOfWeek: [mon-fri]
   hoursOfDay: [18-23, 0-6]
-  timezone: UTC
-
-# Using cron
-schedule:
-  cron: "0 18-23,0-6 * * 1-5"
   timezone: UTC
 ```
 
@@ -260,15 +212,6 @@ schedule:
   timezone: America/Los_Angeles
 ```
 
-### First Week of Month Only
-
-```yaml
-# Cron is required for this pattern
-schedule:
-  cron: "0 9-17 1-7 * 1-5"  # Mon-Fri 9-5, days 1-7 only
-  timezone: America/New_York
-```
-
 ## Schedule Evaluation
 
 5-Spot evaluates schedules every 60 seconds:
@@ -279,12 +222,8 @@ flowchart TD
     B --> C[Convert to Configured Timezone]
     C --> D{Schedule Enabled?}
     D -->|No| E[Phase: Disabled]
-    D -->|Yes| F{Using Cron?}
-    F -->|Yes| G{Cron matches current time?}
-    F -->|No| H{Day in daysOfWeek?}
-    G -->|Yes| I[inSchedule: true]
-    G -->|No| J[inSchedule: false]
-    H -->|No| J
+    D -->|Yes| H{Day in daysOfWeek?}
+    H -->|No| J[inSchedule: false]
     H -->|Yes| K{Hour in hoursOfDay?}
     K -->|No| J
     K -->|Yes| I
@@ -293,16 +232,6 @@ flowchart TD
     L --> N[Update Status]
     M --> N
 ```
-
-## Choosing Between Cron and Ranges
-
-| Use Case | Recommended | Why |
-|----------|-------------|-----|
-| Simple business hours | Day/Hour Ranges | More readable |
-| Complex patterns | Cron | More flexible |
-| Month/day-of-month constraints | Cron | Not possible with ranges |
-| Overnight schedules | Either | Ranges support wrap-around |
-| Team familiarity with cron | Cron | Leverages existing knowledge |
 
 ## Related
 

@@ -138,7 +138,6 @@ mod tests {
     #[test]
     fn test_schedule_spec_get_active_weekdays() {
         let spec = ScheduleSpec {
-            cron: None,
             days_of_week: vec!["mon-fri".to_string()],
             hours_of_day: vec!["9-17".to_string()],
             timezone: "UTC".to_string(),
@@ -152,7 +151,6 @@ mod tests {
     #[test]
     fn test_schedule_spec_get_active_hours() {
         let spec = ScheduleSpec {
-            cron: None,
             days_of_week: vec!["mon-fri".to_string()],
             hours_of_day: vec!["9-17".to_string()],
             timezone: "UTC".to_string(),
@@ -210,7 +208,6 @@ mod tests {
 
         let spec = ScheduledMachineSpec {
             schedule: ScheduleSpec {
-                cron: None,
                 days_of_week: vec!["mon-fri".to_string()],
                 hours_of_day: vec!["9-17".to_string()],
                 timezone: "UTC".to_string(),

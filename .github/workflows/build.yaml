@@ -640,7 +640,7 @@ jobs:
         uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
 
       - name: Regenerate CRDs
-        run: cargo run --bin crdgen > deploy/crds/scheduledmachine.yaml
+        run: cargo run --quiet --bin crdgen > deploy/crds/scheduledmachine.yaml
 
       - name: Package deploy manifests
         run: tar czf deploy-manifests.tar.gz deploy/
