@@ -549,26 +549,6 @@ jobs:
           echo "── vex.openvex.json ─────────────────────────────────────────"
           cat vex.openvex.json
 
-      # vexctl supplies `validate` as a second-opinion schema check against
-      # the OpenVEX reference implementation. Pinned to a tagged release; bump
-      # per ~/dev/roadmaps/5spot-vex-generation-and-signing.md § Dependencies.
-      - name: Install vexctl
-        env:
-          VEXCTL_VERSION: '0.3.0'
-        run: |
-          set -euo pipefail
-          # OpenVEX publishes vexctl as raw platform binaries (no tarball,
-          # no version in the asset name), plus detached Cosign signatures.
-          # Asset layout: vexctl-<os>-<arch>, vexctl-<os>-<arch>.sig,
-          # vexctl-<os>-<arch>.pem. See the release page for the full list.
-          url="https://github.com/openvex/vexctl/releases/download/v${VEXCTL_VERSION}/vexctl-linux-amd64"
-          curl -fsSLo vexctl "$url"
-          sudo install -m 0755 vexctl /usr/local/bin/vexctl
-          vexctl version
-
-      - name: Run vexctl validate
-        run: vexctl validate vex.openvex.json
-
       # Always upload the assembled document so the `grype` scan job can
       # download it via actions/download-artifact@v4 regardless of event.
       - name: Upload OpenVEX document artifact
@@ -823,8 +803,8 @@ jobs:
           name: openvex
           path: ./vex
 
-      # Pinned-version install from the Anchore release tarball (mirrors the
-      # vexctl install step above). Bump via GRYPE_VERSION and record in
+      # Pinned-version install from the Anchore release tarball. Bump via
+      # GRYPE_VERSION and record in
       # ~/dev/roadmaps/5spot-vex-generation-and-signing.md § Dependencies.
       - name: Install Grype
         env:

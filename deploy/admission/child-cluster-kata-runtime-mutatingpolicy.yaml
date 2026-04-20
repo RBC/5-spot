@@ -1,0 +1,70 @@
+# MutatingAdmissionPolicy for child-cluster Node registration.
+#
+# APPLIED TO: the child (workload) cluster, NOT the management cluster.
+#
+# Purpose
+# -------
+# Stamps every Node with the label
+#
+#     katacontainers.io/kata-runtime: "true"
+#
+# at kubelet registration time (CREATE on nodes). This is the upstream
+# kata-deploy DaemonSet's default nodeSelector — once the label is present,
+# kata-deploy schedules its installer Pod onto the Node. DaemonSet pod
+# lifecycle naturally gates installation on Node Ready, which is why we do
+# not (and cannot cleanly) match on a Ready-condition transition here:
+# kubelet updates Node Ready via the nodes/status subresource, which does
+# not allow mutating metadata.labels. Matching on CREATE + letting the
+# DaemonSet handle Ready is the clean shape.
+#
+# Requirements
+# ------------
+# Kubernetes >= 1.32 (alpha: admissionregistration.k8s.io/v1alpha1).
+# Feature gates on the child cluster's kube-apiserver:
+#   --feature-gates=MutatingAdmissionPolicy=true
+#   --runtime-config=admissionregistration.k8s.io/v1alpha1=true
+#
+# Apply with (against the child cluster kubeconfig):
+#   kubectl apply -f deploy/admission/child-cluster-kata-runtime-mutatingpolicy.yaml
+#   kubectl apply -f deploy/admission/child-cluster-kata-runtime-mutatingpolicybinding.yaml
+apiVersion: admissionregistration.k8s.io/v1alpha1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: child-cluster-kata-runtime-label
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: admission
+    app.kubernetes.io/part-of: child-cluster
+    app.kubernetes.io/managed-by: 5spot-controller
+spec:
+  # Ignore rather than Fail: a transient policy evaluation error must not
+  # block kubelet from registering the Node. Missing the label means
+  # kata-deploy will not land on the Node — recoverable by re-patching —
+  # whereas blocking Node registration breaks the cluster.
+  failurePolicy: Ignore
+
+  # Do not re-invoke on the same request after other mutating plugins run;
+  # a single pass is sufficient to add a label.
+  reinvocationPolicy: Never
+
+  matchConstraints:
+    resourceRules:
+      # Core API group — Node is apiVersion: v1 (apiGroups: [""]).
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["nodes"]
+        operations: ["CREATE"]
+
+  mutations:
+    # ApplyConfiguration uses server-side-apply-style merge semantics, so
+    # the existing labels map is preserved and only the kata-runtime key
+    # is added. JSONPatch would require checking whether metadata.labels
+    # exists first; ApplyConfiguration handles that for us.
+    - patchType: ApplyConfiguration
+      applyConfiguration:
+        expression: |
+          Object{
+            metadata: Object.metadata{
+              labels: {"katacontainers.io/kata-runtime": "true"}
+            }
+          }

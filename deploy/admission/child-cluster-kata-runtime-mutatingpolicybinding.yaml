@@ -1,0 +1,34 @@
+# MutatingAdmissionPolicyBinding — activates child-cluster-kata-runtime-label
+# cluster-wide on the child (workload) cluster.
+#
+# Bindings for MutatingAdmissionPolicy have no validationActions field
+# (unlike ValidatingAdmissionPolicyBinding); mutations returned by the
+# policy are always applied when the binding matches.
+#
+# Node is a cluster-scoped resource, so a namespaceSelector has no effect
+# and is omitted. If you need to restrict the label to a subset of Nodes
+# (e.g. only a specific pool), add an objectSelector here rather than
+# adding conditions in the policy expression.
+#
+# Apply after the MutatingAdmissionPolicy (against the child cluster kubeconfig):
+#   kubectl apply -f deploy/admission/child-cluster-kata-runtime-mutatingpolicy.yaml
+#   kubectl apply -f deploy/admission/child-cluster-kata-runtime-mutatingpolicybinding.yaml
+apiVersion: admissionregistration.k8s.io/v1alpha1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: child-cluster-kata-runtime-label-binding
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: admission
+    app.kubernetes.io/part-of: child-cluster
+    app.kubernetes.io/managed-by: 5spot-controller
+spec:
+  policyName: child-cluster-kata-runtime-label
+
+  # All Nodes in the child cluster. Replace with an objectSelector to
+  # scope to a specific pool, e.g.:
+  #   matchResources:
+  #     objectSelector:
+  #       matchLabels:
+  #         node-pool: kata
+  matchResources: {}

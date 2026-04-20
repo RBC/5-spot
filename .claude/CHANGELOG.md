@@ -9,6 +9,50 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-19 21:25] - Remove bogus `vexctl validate` step from build-vex job
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml` (`build-vex` job): Deleted the `Install vexctl` step (VEXCTL_VERSION 0.3.0) and the `Run vexctl validate vex.openvex.json` step. Updated the inline comment on the adjacent `Install Grype` step to drop the now-dangling "mirrors the vexctl install step above" reference.
+
+### Why
+`vexctl` has no `validate` subcommand — it never has — and runs of `build-vex` on push-to-main were failing with `unknown command "validate" for "vexctl"`. The step was added on the assumption that vexctl mirrored the OpenVEX reference implementation's schema validator; it does not. vexctl's 0.3.0 subcommand surface is `attest / create / generate / merge / verify`. Since vexctl was not used anywhere else in the job (Cosign does the attestation, not vexctl), the install step was removed with it rather than left as dead weight. Input-side schema/enum/uniqueness validation is still performed up front by `tools/validate-vex.sh` (which runs `validate_vex.py` against `.vex/*.toml`) — that's the real defensive gate. No behaviour change on pull_request events: the whole `build-vex` job is gated by `if: github.event_name != 'pull_request'` and only runs on push-to-main + release.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CI workflow)
+- [ ] Documentation only
+
+### Follow-up (optional, not in this commit)
+If a second-opinion schema check of the *assembled* `vex.openvex.json` is wanted, add a step that validates against the OpenVEX JSON Schema with a tool that actually ships a validator (e.g. `python -m jsonschema -i vex.openvex.json openvex-schema.json`). Record the dependency in `~/dev/roadmaps/5spot-vex-generation-and-signing.md § Dependencies`.
+
+---
+
+## [2026-04-19 21:10] - Add child-cluster MutatingAdmissionPolicy to label Nodes for kata-deploy
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/admission/child-cluster-kata-runtime-mutatingpolicy.yaml` (new): `MutatingAdmissionPolicy` (`admissionregistration.k8s.io/v1alpha1`) that matches `nodes` on `CREATE` and stamps `katacontainers.io/kata-runtime=true` onto `metadata.labels` via an `ApplyConfiguration` patch. `failurePolicy: Ignore` so a policy evaluation error can never block kubelet from registering a Node.
+- `deploy/admission/child-cluster-kata-runtime-mutatingpolicybinding.yaml` (new): `MutatingAdmissionPolicyBinding` activating the policy cluster-wide on the child cluster. `matchResources: {}` covers every Node; an `objectSelector` can be added to scope to a specific pool.
+
+### Why
+The child (workload) cluster needs Nodes labelled for the upstream `kata-deploy` DaemonSet's default `nodeSelector`. Labelling at Node `CREATE` is the cleanest admission shape: kubelet updates the `Ready` condition via the `nodes/status` subresource, which the API server does not allow to mutate `metadata.labels`, so a true "on Ready" mutation is not possible. `kata-deploy` is a DaemonSet, and DaemonSet pod lifecycle already gates installation on Node readiness — matching on `CREATE` and letting the DaemonSet handle Ready yields the behaviour the user asked for without introducing a controller.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (child-cluster manifests; not wired into the 5-spot controller)
+- [ ] Documentation only
+
+### Follow-up (optional, not in this commit)
+- Promote to `admissionregistration.k8s.io/v1beta1` once the child-cluster floor is Kubernetes >= 1.34.
+- If a subset of Nodes should opt out of kata, add an `objectSelector` to the binding rather than conditions in the policy expression.
+
+---
+
 ## [2026-04-19 20:45] - Fix vexctl installer 404 in build.yaml
 
 **Author:** Erick Bourgeois

@@ -176,22 +176,40 @@ For Kubernetes 1.26–1.27, enable the feature gate on the API server:
 
 ### Apply the manifests
 
-`deploy/admission/` ships two policies, each with its own binding:
+`deploy/admission/` ships three policies, each with its own binding:
 
 - `validatingadmissionpolicy*.yaml` — validates `ScheduledMachine` CRs.
 - `controller-deployment-policy.yaml` + `controller-deployment-binding.yaml`
   — validates the controller's own `Deployment`, enforcing that
   `POD_NAME` is set via downward API and rejecting the deprecated
   `CONTROLLER_POD_NAME` env var with a migration message.
+- `child-cluster-kata-runtime-mutatingpolicy.yaml` +
+  `child-cluster-kata-runtime-mutatingpolicybinding.yaml` — **applied to
+  the child (workload) cluster, not the management cluster.** A
+  `MutatingAdmissionPolicy` (`admissionregistration.k8s.io/v1alpha1`,
+  Kubernetes >= 1.32) that stamps `katacontainers.io/kata-runtime=true`
+  on every Node at kubelet registration time (`CREATE`), which is the
+  upstream `kata-deploy` DaemonSet's default `nodeSelector`. DaemonSet
+  pod lifecycle naturally gates installation on Node `Ready`, so no
+  controller is required. `failurePolicy: Ignore` ensures a policy
+  error never blocks Node registration.
 
 Apply each policy before its binding (order matters — the binding
-references the policy by name):
+references the policy by name). The first two go on the **management**
+cluster; the `child-cluster-*` pair goes on the **child** cluster:
 
 ```bash
+# Management cluster
 kubectl apply -f deploy/admission/validatingadmissionpolicy.yaml
 kubectl apply -f deploy/admission/validatingadmissionpolicybinding.yaml
 kubectl apply -f deploy/admission/controller-deployment-policy.yaml
 kubectl apply -f deploy/admission/controller-deployment-binding.yaml
+
+# Child (workload) cluster
+kubectl --kubeconfig <child-kubeconfig> apply \
+  -f deploy/admission/child-cluster-kata-runtime-mutatingpolicy.yaml
+kubectl --kubeconfig <child-kubeconfig> apply \
+  -f deploy/admission/child-cluster-kata-runtime-mutatingpolicybinding.yaml
 ```
 
 ### Verify the policy is active
