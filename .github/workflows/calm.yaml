@@ -182,7 +182,9 @@ jobs:
           node-version: ${{ inputs.node-version }}
 
       - name: Install @finos/calm-cli
-        run: npm install -g "@finos/calm-cli@${{ inputs.cli-version }}"
+        env:
+          CLI_VERSION: ${{ inputs.cli-version }}
+        run: npm install -g "@finos/calm-cli@${CLI_VERSION}"
 
       - name: Show CLI version
         run: calm --version

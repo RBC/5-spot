@@ -200,9 +200,16 @@ Include:
 
 ## Community
 
-- **GitHub Issues**: Bug reports and feature requests
-- **GitHub Discussions**: Questions and ideas
-- **Pull Requests**: Code contributions
+- **Slack**: [`#5-spot`](https://finos-lf.slack.com/channels/5-spot) on the
+  FINOS Slack workspace — join at <https://finos.org/slack>. Best for
+  usage questions, reconciliation behaviour, CAPI integration, and
+  release coordination.
+- **GitHub Issues**: Bug reports and feature requests. Security-sensitive
+  reports should follow [`SECURITY.md`](https://github.com/finos/5-spot/blob/main/SECURITY.md),
+  not Issues.
+- **GitHub Discussions**: Questions and longer-form design / architecture
+  conversations that outgrow a Slack thread.
+- **Pull Requests**: Code contributions.
 
 ## License
 

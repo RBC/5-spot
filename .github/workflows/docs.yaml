@@ -104,8 +104,11 @@ jobs:
           python-version: '3.11'
 
       - name: Install Poetry
+        env:
+          # Pinned for reproducibility; bump alongside docs/pyproject.toml.
+          POETRY_VERSION: "1.8.4"
         run: |
-          curl -sSL https://install.python-poetry.org | python3 -
+          curl -sSL https://install.python-poetry.org | python3 - --version "${POETRY_VERSION}"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Configure Poetry
@@ -147,8 +150,11 @@ jobs:
       - name: Check for broken links
         if: github.event_name == 'pull_request'
         continue-on-error: true
+        env:
+          # Pinned for reproducibility; bump periodically.
+          LINKINATOR_VERSION: "6.1.2"
         run: |
-          npm install -g linkinator
+          npm install -g "linkinator@${LINKINATOR_VERSION}"
           linkinator docs/site/ --recurse --skip "rustdoc/.*" --verbosity error
 
       - name: Setup Pages
