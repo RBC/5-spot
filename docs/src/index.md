@@ -152,8 +152,17 @@ Current version: **v0.1.0-alpha**
 
 ## Support & Community
 
-- **GitHub Issues**: [Report bugs or request features](https://github.com/finos/5-spot/issues)
+- **Slack**: [`#5-spot`](https://finos-lf.slack.com/channels/5-spot) on the
+  FINOS Slack workspace. Join at <https://finos.org/slack> if you don't
+  already have access. Use `#5-spot` for usage questions, schedule and
+  reconciliation behaviour, CAPI integration questions, and release
+  coordination.
+- **GitHub Issues**: [Report bugs or request features](https://github.com/finos/5-spot/issues).
+  Security-sensitive reports should follow [`SECURITY.md`](https://github.com/finos/5-spot/blob/main/SECURITY.md),
+  not Issues.
 - **GitHub Discussions**: [Ask questions and share ideas](https://github.com/finos/5-spot/discussions)
+  for longer-form design and architecture conversations that outgrow a
+  Slack thread.
 - **Documentation**: You're reading it!
 
 ## License
