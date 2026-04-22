@@ -37,6 +37,7 @@ mod tests {
             graceful_shutdown_timeout: "5m".to_string(),
             node_drain_timeout: "5m".to_string(),
             kill_switch: false,
+            node_taints: vec![],
             kill_if_commands: None,
         }
     }
@@ -1136,5 +1137,172 @@ mod tests {
             matches!(result, Err(super::super::ReconcilerError::InvalidConfig(_))),
             "non-namespaced resource must fast-fail with InvalidConfig, got {result:?}"
         );
+    }
+
+    // ========================================================================
+    // reconcile_node_taints_best_effort — Phase-5 termination edge-case tests
+    //
+    // Goal: prove the taint reconcile never touches the apiserver when the
+    // ScheduledMachine is in a termination state. A partial apply mid-deletion
+    // would leave taints on a Node that's about to be drained and deleted —
+    // wasteful at best, confusing at worst.
+    //
+    // Harness: each test spawns a watcher task on the mock handle that panics
+    // if any HTTP request is received within a 50ms budget. The function under
+    // test is then called with a mock client. If the guard is missing, the
+    // function will issue a GET on the Node and the watcher panics.
+    // ========================================================================
+
+    fn one_taint() -> Vec<crate::crd::NodeTaint> {
+        vec![crate::crd::NodeTaint {
+            key: "workload".to_string(),
+            value: Some("batch".to_string()),
+            effect: crate::crd::TaintEffect::NoSchedule,
+        }]
+    }
+
+    fn node_ref_named(name: &str) -> Option<crate::crd::NodeRef> {
+        Some(crate::crd::NodeRef {
+            api_version: "v1".to_string(),
+            kind: "Node".to_string(),
+            name: name.to_string(),
+            uid: None,
+        })
+    }
+
+    fn taint_mock_client_pair() -> (
+        kube::Client,
+        tower_test::mock::Handle<
+            http::Request<kube::client::Body>,
+            http::Response<kube::client::Body>,
+        >,
+    ) {
+        let (svc, handle) = tower_test::mock::pair::<
+            http::Request<kube::client::Body>,
+            http::Response<kube::client::Body>,
+        >();
+        (kube::Client::new(svc, "default"), handle)
+    }
+
+    fn spawn_no_http_watcher(
+        task_label: &'static str,
+        handle: tower_test::mock::Handle<
+            http::Request<kube::client::Body>,
+            http::Response<kube::client::Body>,
+        >,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut h = std::pin::pin!(handle);
+            tokio::select! {
+                req = h.next_request() => {
+                    panic!(
+                        "{task_label}: no HTTP call expected, got: {:?}",
+                        req.map(|(r, _)| r.uri().to_string())
+                    );
+                }
+                () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                    // expected path: no request arrives within the budget
+                }
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn test_taint_best_effort_short_circuits_on_deletion_timestamp() {
+        // When the SM is being deleted, taint reconcile must not touch the
+        // apiserver — the Node is about to be drained and removed.
+        let mut sm = make_sm_with_uid("deadbeef-0000-0000-0000-000000005001");
+        sm.spec.node_taints = one_taint();
+        sm.metadata.deletion_timestamp =
+            Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                k8s_openapi::jiff::Timestamp::now(),
+            ));
+
+        let (client, handle) = taint_mock_client_pair();
+        let watcher = spawn_no_http_watcher("deletion_timestamp guard", handle);
+        let ctx = Arc::new(Context::new(client, 0, 1));
+
+        super::super::reconcile_node_taints_best_effort(
+            &Arc::new(sm),
+            &ctx,
+            &node_ref_named("worker-1"),
+        )
+        .await;
+
+        watcher.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_taint_best_effort_short_circuits_on_kill_switch() {
+        // killSwitch pre-empts every other phase and routes to
+        // handle_kill_switch. A defensive guard in the best-effort helper
+        // prevents a future caller from accidentally running the taint step
+        // mid-kill-switch.
+        let mut sm = make_sm_with_uid("deadbeef-0000-0000-0000-000000005002");
+        sm.spec.node_taints = one_taint();
+        sm.spec.kill_switch = true;
+
+        let (client, handle) = taint_mock_client_pair();
+        let watcher = spawn_no_http_watcher("kill_switch guard", handle);
+        let ctx = Arc::new(Context::new(client, 0, 1));
+
+        super::super::reconcile_node_taints_best_effort(
+            &Arc::new(sm),
+            &ctx,
+            &node_ref_named("worker-2"),
+        )
+        .await;
+
+        watcher.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_taint_best_effort_short_circuits_on_absent_node_ref() {
+        // No nodeRef yet — nothing to taint. Must not call Node.get().
+        let mut sm = make_sm_with_uid("deadbeef-0000-0000-0000-000000005003");
+        sm.spec.node_taints = one_taint();
+
+        let (client, handle) = taint_mock_client_pair();
+        let watcher = spawn_no_http_watcher("absent nodeRef guard", handle);
+        let ctx = Arc::new(Context::new(client, 0, 1));
+
+        super::super::reconcile_node_taints_best_effort(&Arc::new(sm), &ctx, &None).await;
+
+        watcher.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_taint_best_effort_short_circuits_on_empty_node_ref_name() {
+        // Malformed nodeRef with empty name must not trigger Api::get("").
+        let mut sm = make_sm_with_uid("deadbeef-0000-0000-0000-000000005004");
+        sm.spec.node_taints = one_taint();
+
+        let (client, handle) = taint_mock_client_pair();
+        let watcher = spawn_no_http_watcher("empty nodeRef name guard", handle);
+        let ctx = Arc::new(Context::new(client, 0, 1));
+
+        super::super::reconcile_node_taints_best_effort(&Arc::new(sm), &ctx, &node_ref_named(""))
+            .await;
+
+        watcher.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_taint_best_effort_short_circuits_when_desired_and_applied_both_empty() {
+        // Nothing declared, nothing applied — no reason to GET the Node.
+        let sm = make_sm_with_uid("deadbeef-0000-0000-0000-000000005005");
+
+        let (client, handle) = taint_mock_client_pair();
+        let watcher = spawn_no_http_watcher("empty desired+applied guard", handle);
+        let ctx = Arc::new(Context::new(client, 0, 1));
+
+        super::super::reconcile_node_taints_best_effort(
+            &Arc::new(sm),
+            &ctx,
+            &node_ref_named("worker-5"),
+        )
+        .await;
+
+        watcher.await.unwrap();
     }
 }

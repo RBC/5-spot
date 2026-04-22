@@ -53,6 +53,7 @@ A cloud-native Kubernetes controller for managing time-based machine scheduling 
 - 🔄 **Graceful shutdown** - Configurable grace periods with automatic node draining
 - 🎯 **Priority-based** - Resource distribution across controller instances
 - 🚨 **Kill switch** - Emergency immediate removal capability
+- 🏷️ **User-defined Node taints** - Declare taints in `spec.nodeTaints`; the controller applies them once the Node is Ready, tracks ownership, and reconciles drift
 - 📊 **Multi-instance** - Horizontal scaling with consistent hashing
 - 🔍 **Full observability** - Prometheus metrics and health checks
 

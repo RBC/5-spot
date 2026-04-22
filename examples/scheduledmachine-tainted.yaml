@@ -1,0 +1,63 @@
+# Example ScheduledMachine with user-defined Node taints.
+#
+# The controller will provision the machine on its schedule; once the Node is
+# Ready, it applies the taints listed in `spec.nodeTaints` to the Node object.
+# Only taints the controller applied are ever removed — admin-added taints on
+# the same Node are left untouched.
+#
+# Taint identity is the tuple (key, effect). Same key with different effects
+# is permitted; duplicate (key, effect) pairs are rejected.
+
+apiVersion: 5spot.finos.org/v1alpha1
+kind: ScheduledMachine
+metadata:
+  name: batch-worker-tainted
+  namespace: default
+spec:
+  clusterName: my-k0s-cluster
+
+  schedule:
+    daysOfWeek:
+      - mon-fri
+    hoursOfDay:
+      - "9-17"
+    timezone: America/New_York
+    enabled: true
+
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    kind: K0sWorkerConfig
+    spec:
+      version: v1.30.0+k0s.0
+
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: RemoteMachine
+    spec:
+      address: 192.168.1.100
+      port: 22
+      user: admin
+
+  # Optional: Labels and annotations for the created CAPI Machine
+  machineTemplate:
+    labels:
+      node-role.kubernetes.io/worker: ""
+      topology.kubernetes.io/zone: zone-a
+    annotations:
+      5spot.finos.org/scheduled-by: business-hours-worker
+
+  # Two user-defined taints applied once the Node is Ready.
+  nodeTaints:
+    # Workloads without a matching toleration will not schedule here.
+    - key: workload
+      value: batch
+      effect: NoSchedule
+    # Existing pods without a matching toleration will be evicted.
+    - key: dedicated
+      value: ml
+      effect: NoExecute
+
+  priority: 50
+  gracefulShutdownTimeout: 5m
+  nodeDrainTimeout: 5m
+  killSwitch: false

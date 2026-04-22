@@ -89,6 +89,10 @@ fn main() {
     println!("  killIfCommands:");
     println!("    - java");
     println!("    - idea");
+    println!("  nodeTaints:");
+    println!("    - key: workload");
+    println!("      value: batch");
+    println!("      effect: NoSchedule");
     println!("```");
     println!();
     println!("### Spec Fields");
@@ -192,6 +196,30 @@ fn main() {
     println!("Patterns are evaluated against both `/proc/<pid>/comm` (exact basename) and");
     println!("`/proc/<pid>/cmdline` (substring).");
     println!();
+    println!("#### nodeTaints");
+    println!();
+    println!("(optional, array of NodeTaint, default: `[]`) User-defined taints applied to the");
+    println!("Kubernetes Node once it is Ready. The controller owns and reconciles only the");
+    println!("taints it applied (tracked in `status.appliedNodeTaints` plus the");
+    println!("`5spot.finos.org/applied-taints` annotation on the Node). Admin-added taints on");
+    println!("the same Node are left untouched. Taint identity is the tuple `(key, effect)`;");
+    println!("`value` is mutable.");
+    println!();
+    println!("Each `NodeTaint` has the following fields:");
+    println!();
+    println!("- **key** (required, string): RFC-1123 qualified name. Max 253 chars total;");
+    println!("  name-part ≤ 63. Reserved prefixes rejected at admission: `5spot.finos.org/`,");
+    println!("  `kubernetes.io/`, `node.kubernetes.io/`, `node-role.kubernetes.io/`.");
+    println!("- **value** (optional, string): Optional value, ≤ 63 chars. Mutable — changing");
+    println!("  the value on an existing taint triggers an update, not an add/remove.");
+    println!(
+        "- **effect** (required, enum): One of `NoSchedule`, `PreferNoSchedule`, `NoExecute`."
+    );
+    println!();
+    println!("Duplicate `(key, effect)` pairs are rejected at admission. Admin-added taints");
+    println!("colliding on `(key, effect)` are surfaced as a `TaintOwnershipConflict` condition");
+    println!("rather than overwritten.");
+    println!();
     println!("### Status Fields");
     println!();
     println!("#### phase");
@@ -251,4 +279,14 @@ fn main() {
     println!("- **kind** (required, string): Kind of the referenced object (typically `Node`)");
     println!("- **name** (required, string): Name of the Node");
     println!("- **uid** (optional, string): UID of the Node, protecting against name reuse");
+    println!();
+    println!("#### appliedNodeTaints");
+    println!();
+    println!("(optional, array of NodeTaint, default: `[]`) The controller's record of truth");
+    println!("for which taints it applied to the Node. Only entries in this list are eligible");
+    println!("for removal on a subsequent reconcile — admin-added taints colliding on");
+    println!("`(key, effect)` are surfaced as a `TaintOwnershipConflict` condition rather than");
+    println!("overwritten.");
+    println!();
+    println!("See `spec.nodeTaints` for the `NodeTaint` field schema.");
 }

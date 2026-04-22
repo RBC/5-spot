@@ -93,7 +93,7 @@ spec:
                 description: |-
                   Optional list of process patterns that trigger an emergency node
                   reclaim. When non-empty, the 5-Spot controller installs the
-                  `5spot-reclaim-agent` DaemonSet on every Node backing this
+                  `5spot-reclaim-agent` `DaemonSet` on every Node backing this
                   `ScheduledMachine`; the agent watches `/proc` for any process whose
                   basename or argv matches one of these patterns and, on first match,
                   annotates the Node to request immediate (non-graceful) removal from
@@ -135,6 +135,49 @@ spec:
                 default: 5m
                 description: Timeout for draining the node before deletion (e.g., "5m", "10m")
                 type: string
+              nodeTaints:
+                description: |-
+                  User-defined taints applied to the Kubernetes Node once it is Ready.
+
+                  The controller owns and reconciles only the taints it applied (tracked
+                  in `status.appliedNodeTaints` plus the `5spot.finos.org/applied-taints`
+                  annotation on the Node). Admin-added taints on the same Node are left
+                  untouched. A taint is identified by the tuple `(key, effect)`; `value`
+                  is mutable. Keys prefixed with `5spot.finos.org/`, `kubernetes.io/`,
+                  `node.kubernetes.io/`, or `node-role.kubernetes.io/` are rejected.
+                items:
+                  description: |-
+                    A taint the controller applies to the Kubernetes Node once it is Ready.
+
+                    Mirrors the shape of core/v1 `Taint`. Identity is the tuple `(key, effect)`;
+                    `value` is mutable. See `ScheduledMachineSpec.node_taints` for ownership
+                    semantics.
+                  properties:
+                    effect:
+                      description: Taint effect — one of `NoSchedule`, `PreferNoSchedule`, `NoExecute`.
+                      enum:
+                      - NoSchedule
+                      - PreferNoSchedule
+                      - NoExecute
+                      type: string
+                    key:
+                      description: |-
+                        Taint key. Must be a qualified name (`[prefix/]name`), 1–63 chars on the
+                        name portion and matching `[a-z0-9A-Z]([-a-zA-Z0-9.]*[a-zA-Z0-9])?`.
+                        Reserved prefixes (`5spot.finos.org/`, `kubernetes.io/`,
+                        `node.kubernetes.io/`, `node-role.kubernetes.io/`) are rejected.
+                      type: string
+                    value:
+                      description: |-
+                        Optional taint value (max 63 chars). Matches the same qualified-name
+                        pattern as `key`'s name portion when set.
+                      nullable: true
+                      type: string
+                  required:
+                  - effect
+                  - key
+                  type: object
+                type: array
               priority:
                 default: 50
                 description: Priority for machine scheduling (higher values = higher priority)
@@ -183,6 +226,46 @@ spec:
           status:
             nullable: true
             properties:
+              appliedNodeTaints:
+                description: |-
+                  Taints the controller has applied to the Node, in the order they were
+                  applied. Maintained as the controller's record of truth so subsequent
+                  reconciles only mutate taints we own — admin-added taints on the same
+                  Node whose `(key, effect)` collides with an entry here are surfaced as
+                  a `TaintOwnershipConflict` condition rather than overwritten.
+                items:
+                  description: |-
+                    A taint the controller applies to the Kubernetes Node once it is Ready.
+
+                    Mirrors the shape of core/v1 `Taint`. Identity is the tuple `(key, effect)`;
+                    `value` is mutable. See `ScheduledMachineSpec.node_taints` for ownership
+                    semantics.
+                  properties:
+                    effect:
+                      description: Taint effect — one of `NoSchedule`, `PreferNoSchedule`, `NoExecute`.
+                      enum:
+                      - NoSchedule
+                      - PreferNoSchedule
+                      - NoExecute
+                      type: string
+                    key:
+                      description: |-
+                        Taint key. Must be a qualified name (`[prefix/]name`), 1–63 chars on the
+                        name portion and matching `[a-z0-9A-Z]([-a-zA-Z0-9.]*[a-zA-Z0-9])?`.
+                        Reserved prefixes (`5spot.finos.org/`, `kubernetes.io/`,
+                        `node.kubernetes.io/`, `node-role.kubernetes.io/`) are rejected.
+                      type: string
+                    value:
+                      description: |-
+                        Optional taint value (max 63 chars). Matches the same qualified-name
+                        pattern as `key`'s name portion when set.
+                      nullable: true
+                      type: string
+                  required:
+                  - effect
+                  - key
+                  type: object
+                type: array
               bootstrapRef:
                 description: Reference to the created bootstrap resource
                 nullable: true

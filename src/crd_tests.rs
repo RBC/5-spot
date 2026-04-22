@@ -312,6 +312,7 @@ mod tests {
             graceful_shutdown_timeout: "5m".to_string(),
             node_drain_timeout: "5m".to_string(),
             kill_switch: false,
+            node_taints: vec![],
             kill_if_commands: None,
         };
 
@@ -527,6 +528,7 @@ mod tests {
             graceful_shutdown_timeout: "5m".to_string(),
             node_drain_timeout: "5m".to_string(),
             kill_switch: false,
+            node_taints: vec![],
             kill_if_commands: None,
         }
     }
@@ -638,5 +640,438 @@ mod tests {
         let round: NodeRef = serde_json::from_value(json).expect("round-trip NodeRef");
         assert_eq!(round.api_version, "v1");
         assert_eq!(round.uid.as_deref(), Some("aaaa-bbbb"));
+    }
+
+    // ========================================================================
+    // NodeTaint / TaintEffect tests
+    // ========================================================================
+
+    #[test]
+    fn test_node_taint_parse_with_value() {
+        let json = serde_json::json!({
+            "key": "workload",
+            "value": "batch",
+            "effect": "NoSchedule"
+        });
+        let taint: NodeTaint = serde_json::from_value(json).expect("parse NodeTaint with value");
+        assert_eq!(taint.key, "workload");
+        assert_eq!(taint.value.as_deref(), Some("batch"));
+        assert_eq!(taint.effect, TaintEffect::NoSchedule);
+    }
+
+    #[test]
+    fn test_node_taint_parse_without_value() {
+        let json = serde_json::json!({
+            "key": "dedicated",
+            "effect": "NoExecute"
+        });
+        let taint: NodeTaint = serde_json::from_value(json).expect("parse NodeTaint no value");
+        assert_eq!(taint.key, "dedicated");
+        assert!(taint.value.is_none());
+        assert_eq!(taint.effect, TaintEffect::NoExecute);
+    }
+
+    #[test]
+    fn test_node_taint_round_trip_without_value_omits_field() {
+        let taint = NodeTaint {
+            key: "dedicated".to_string(),
+            value: None,
+            effect: TaintEffect::PreferNoSchedule,
+        };
+        let json = serde_json::to_value(&taint).expect("serialize");
+        assert_eq!(json["key"], "dedicated");
+        assert_eq!(json["effect"], "PreferNoSchedule");
+        assert!(
+            json.get("value").is_none(),
+            "value=None must be omitted, got: {json}"
+        );
+    }
+
+    #[test]
+    fn test_taint_effect_rejects_invalid_variant() {
+        let json = serde_json::json!({
+            "key": "k",
+            "effect": "Invalid"
+        });
+        let result: Result<NodeTaint, _> = serde_json::from_value(json);
+        assert!(result.is_err(), "Invalid effect must fail to parse");
+    }
+
+    #[test]
+    fn test_taint_effect_all_three_variants_round_trip() {
+        for (variant, name) in [
+            (TaintEffect::NoSchedule, "NoSchedule"),
+            (TaintEffect::PreferNoSchedule, "PreferNoSchedule"),
+            (TaintEffect::NoExecute, "NoExecute"),
+        ] {
+            let json = serde_json::to_value(&variant).expect("serialize");
+            assert_eq!(json, serde_json::Value::String(name.to_string()));
+            let round: TaintEffect = serde_json::from_value(json).expect("round-trip");
+            assert_eq!(round, variant);
+        }
+    }
+
+    #[test]
+    fn test_node_taint_hash_eq_by_key_and_effect_and_value() {
+        let a = NodeTaint {
+            key: "k".to_string(),
+            value: Some("v".to_string()),
+            effect: TaintEffect::NoSchedule,
+        };
+        let b = a.clone();
+        assert_eq!(a, b, "Clone must be Eq");
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(a);
+        assert!(set.contains(&b), "Hash must agree with Eq for clones");
+    }
+
+    #[test]
+    fn test_scheduled_machine_spec_default_node_taints_is_empty() {
+        let json = serde_json::json!({
+            "schedule": {"daysOfWeek": [], "hoursOfDay": [], "timezone": "UTC", "enabled": true},
+            "clusterName": "c",
+            "bootstrapSpec": {
+                "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                "kind": "K0sWorkerConfig",
+                "spec": {}
+            },
+            "infrastructureSpec": {
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "RemoteMachine",
+                "spec": {"address": "10.0.0.1", "port": 22}
+            }
+        });
+        let spec: ScheduledMachineSpec =
+            serde_json::from_value(json).expect("missing nodeTaints must default to empty");
+        assert!(spec.node_taints.is_empty());
+    }
+
+    #[test]
+    fn test_scheduled_machine_spec_node_taints_omitted_when_empty() {
+        let json = serde_json::json!({
+            "schedule": {"daysOfWeek": [], "hoursOfDay": [], "timezone": "UTC", "enabled": true},
+            "clusterName": "c",
+            "bootstrapSpec": {
+                "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                "kind": "K0sWorkerConfig",
+                "spec": {}
+            },
+            "infrastructureSpec": {
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "RemoteMachine",
+                "spec": {"address": "10.0.0.1", "port": 22}
+            }
+        });
+        let spec: ScheduledMachineSpec = serde_json::from_value(json).expect("parse");
+        let back = serde_json::to_value(&spec).expect("serialize");
+        assert!(
+            back.get("nodeTaints").is_none(),
+            "empty nodeTaints must serialize as omitted, got: {back}"
+        );
+    }
+
+    #[test]
+    fn test_scheduled_machine_spec_parses_node_taints() {
+        let json = serde_json::json!({
+            "schedule": {"daysOfWeek": [], "hoursOfDay": [], "timezone": "UTC", "enabled": true},
+            "clusterName": "c",
+            "bootstrapSpec": {
+                "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                "kind": "K0sWorkerConfig",
+                "spec": {}
+            },
+            "infrastructureSpec": {
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "RemoteMachine",
+                "spec": {"address": "10.0.0.1", "port": 22}
+            },
+            "nodeTaints": [
+                {"key": "workload", "value": "batch", "effect": "NoSchedule"},
+                {"key": "dedicated", "effect": "NoExecute"}
+            ]
+        });
+        let spec: ScheduledMachineSpec = serde_json::from_value(json).expect("parse");
+        assert_eq!(spec.node_taints.len(), 2);
+        assert_eq!(spec.node_taints[0].key, "workload");
+        assert_eq!(spec.node_taints[0].value.as_deref(), Some("batch"));
+        assert_eq!(spec.node_taints[0].effect, TaintEffect::NoSchedule);
+        assert_eq!(spec.node_taints[1].key, "dedicated");
+        assert!(spec.node_taints[1].value.is_none());
+        assert_eq!(spec.node_taints[1].effect, TaintEffect::NoExecute);
+    }
+
+    // --- validate_node_taints: happy path ---
+
+    #[test]
+    fn test_validate_node_taints_empty_list_ok() {
+        assert!(validate_node_taints(&[]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_node_taints_simple_valid_list_ok() {
+        let taints = vec![
+            NodeTaint {
+                key: "workload".to_string(),
+                value: Some("batch".to_string()),
+                effect: TaintEffect::NoSchedule,
+            },
+            NodeTaint {
+                key: "dedicated".to_string(),
+                value: None,
+                effect: TaintEffect::NoExecute,
+            },
+        ];
+        assert!(validate_node_taints(&taints).is_ok());
+    }
+
+    #[test]
+    fn test_validate_node_taints_key_with_prefix_ok() {
+        let taints = vec![NodeTaint {
+            key: "example.com/team".to_string(),
+            value: Some("platform".to_string()),
+            effect: TaintEffect::NoSchedule,
+        }];
+        assert!(validate_node_taints(&taints).is_ok());
+    }
+
+    #[test]
+    fn test_validate_node_taints_same_key_different_effect_ok() {
+        // core/v1 allows same key with different effects.
+        let taints = vec![
+            NodeTaint {
+                key: "workload".to_string(),
+                value: Some("batch".to_string()),
+                effect: TaintEffect::NoSchedule,
+            },
+            NodeTaint {
+                key: "workload".to_string(),
+                value: Some("batch".to_string()),
+                effect: TaintEffect::NoExecute,
+            },
+        ];
+        assert!(validate_node_taints(&taints).is_ok());
+    }
+
+    // --- validate_node_taints: rejection paths ---
+
+    #[test]
+    fn test_validate_node_taints_rejects_empty_key() {
+        let taints = vec![NodeTaint {
+            key: String::new(),
+            value: None,
+            effect: TaintEffect::NoSchedule,
+        }];
+        let err = validate_node_taints(&taints).expect_err("empty key must be rejected");
+        assert!(err.contains("key"), "error should mention key: {err}");
+    }
+
+    #[test]
+    fn test_validate_node_taints_rejects_leading_hyphen_key() {
+        let taints = vec![NodeTaint {
+            key: "-bad".to_string(),
+            value: None,
+            effect: TaintEffect::NoSchedule,
+        }];
+        let err = validate_node_taints(&taints).expect_err("leading hyphen key must be rejected");
+        assert!(err.contains("key"), "error should mention key: {err}");
+    }
+
+    #[test]
+    fn test_validate_node_taints_rejects_trailing_hyphen_key() {
+        let taints = vec![NodeTaint {
+            key: "bad-".to_string(),
+            value: None,
+            effect: TaintEffect::NoSchedule,
+        }];
+        let err = validate_node_taints(&taints).expect_err("trailing hyphen key must be rejected");
+        assert!(err.contains("key"), "error should mention key: {err}");
+    }
+
+    #[test]
+    fn test_validate_node_taints_rejects_key_with_invalid_char() {
+        let taints = vec![NodeTaint {
+            key: "bad$key".to_string(),
+            value: None,
+            effect: TaintEffect::NoSchedule,
+        }];
+        let err = validate_node_taints(&taints).expect_err("invalid char must be rejected");
+        assert!(err.contains("key"), "error should mention key: {err}");
+    }
+
+    #[test]
+    fn test_validate_node_taints_rejects_key_over_63_chars() {
+        let long_key = "a".repeat(64);
+        let taints = vec![NodeTaint {
+            key: long_key,
+            value: None,
+            effect: TaintEffect::NoSchedule,
+        }];
+        let err = validate_node_taints(&taints).expect_err("long key must be rejected");
+        assert!(err.contains("63"), "error should mention limit: {err}");
+    }
+
+    #[test]
+    fn test_validate_node_taints_rejects_value_over_63_chars() {
+        let long_value = "v".repeat(64);
+        let taints = vec![NodeTaint {
+            key: "workload".to_string(),
+            value: Some(long_value),
+            effect: TaintEffect::NoSchedule,
+        }];
+        let err = validate_node_taints(&taints).expect_err("long value must be rejected");
+        assert!(err.contains("63"), "error should mention limit: {err}");
+    }
+
+    #[test]
+    fn test_validate_node_taints_rejects_duplicate_key_and_effect() {
+        let taints = vec![
+            NodeTaint {
+                key: "workload".to_string(),
+                value: Some("a".to_string()),
+                effect: TaintEffect::NoSchedule,
+            },
+            NodeTaint {
+                key: "workload".to_string(),
+                value: Some("b".to_string()),
+                effect: TaintEffect::NoSchedule,
+            },
+        ];
+        let err = validate_node_taints(&taints).expect_err("duplicate must be rejected");
+        assert!(
+            err.contains("duplicate"),
+            "error should mention duplicate: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_node_taints_rejects_reserved_5spot_prefix() {
+        let taints = vec![NodeTaint {
+            key: "5spot.finos.org/reserved".to_string(),
+            value: None,
+            effect: TaintEffect::NoSchedule,
+        }];
+        let err =
+            validate_node_taints(&taints).expect_err("5spot.finos.org/ prefix must be rejected");
+        assert!(
+            err.contains("5spot.finos.org"),
+            "error should mention reserved prefix: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_node_taints_rejects_kubernetes_io_prefix() {
+        let taints = vec![NodeTaint {
+            key: "kubernetes.io/role".to_string(),
+            value: None,
+            effect: TaintEffect::NoSchedule,
+        }];
+        let err = validate_node_taints(&taints)
+            .expect_err("kubernetes.io/ prefix must be rejected as reserved");
+        assert!(
+            err.contains("reserved"),
+            "error should mention reserved: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_node_taints_rejects_node_kubernetes_io_prefix() {
+        let taints = vec![NodeTaint {
+            key: "node.kubernetes.io/unreachable".to_string(),
+            value: None,
+            effect: TaintEffect::NoExecute,
+        }];
+        let err = validate_node_taints(&taints)
+            .expect_err("node.kubernetes.io/ prefix must be rejected as reserved");
+        assert!(
+            err.contains("reserved"),
+            "error should mention reserved: {err}"
+        );
+    }
+
+    // ========================================================================
+    // Phase 2 — status.appliedNodeTaints + NodeTainted condition constants
+    // ========================================================================
+
+    #[test]
+    fn test_status_applied_node_taints_defaults_empty() {
+        let status = ScheduledMachineStatus::default();
+        assert!(status.applied_node_taints.is_empty());
+    }
+
+    #[test]
+    fn test_status_applied_node_taints_omitted_when_empty() {
+        let status = ScheduledMachineStatus::default();
+        let json = serde_json::to_value(&status).expect("serialize");
+        assert!(
+            json.get("appliedNodeTaints").is_none(),
+            "empty appliedNodeTaints must be omitted, got: {json}"
+        );
+    }
+
+    #[test]
+    fn test_status_applied_node_taints_round_trip() {
+        let status = ScheduledMachineStatus {
+            applied_node_taints: vec![
+                NodeTaint {
+                    key: "workload".to_string(),
+                    value: Some("batch".to_string()),
+                    effect: TaintEffect::NoSchedule,
+                },
+                NodeTaint {
+                    key: "dedicated".to_string(),
+                    value: None,
+                    effect: TaintEffect::NoExecute,
+                },
+            ],
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&status).expect("serialize");
+        assert_eq!(json["appliedNodeTaints"][0]["key"], "workload");
+        assert_eq!(json["appliedNodeTaints"][0]["effect"], "NoSchedule");
+        assert_eq!(json["appliedNodeTaints"][1]["key"], "dedicated");
+        assert_eq!(json["appliedNodeTaints"][1]["effect"], "NoExecute");
+        let round: ScheduledMachineStatus =
+            serde_json::from_value(json).expect("deserialize status");
+        assert_eq!(round.applied_node_taints.len(), 2);
+        assert_eq!(round.applied_node_taints[0], status.applied_node_taints[0]);
+        assert_eq!(round.applied_node_taints[1], status.applied_node_taints[1]);
+    }
+
+    #[test]
+    fn test_status_missing_applied_node_taints_deserializes_as_empty() {
+        let json = serde_json::json!({});
+        let status: ScheduledMachineStatus =
+            serde_json::from_value(json).expect("deserialize defaulted status");
+        assert!(status.applied_node_taints.is_empty());
+    }
+
+    #[test]
+    fn test_node_tainted_condition_constants() {
+        use crate::constants::{
+            CONDITION_TYPE_NODE_TAINTED, REASON_NODE_NOT_READY, REASON_NODE_TAINTS_APPLIED,
+            REASON_NODE_TAINT_PATCH_FAILED, REASON_NO_NODE_YET, REASON_TAINT_OWNERSHIP_CONFLICT,
+        };
+        assert_eq!(CONDITION_TYPE_NODE_TAINTED, "NodeTainted");
+        assert_eq!(REASON_NODE_TAINTS_APPLIED, "Applied");
+        assert_eq!(REASON_NODE_NOT_READY, "NodeNotReady");
+        assert_eq!(REASON_NODE_TAINT_PATCH_FAILED, "PatchFailed");
+        assert_eq!(REASON_NO_NODE_YET, "NoNodeYet");
+        assert_eq!(REASON_TAINT_OWNERSHIP_CONFLICT, "TaintOwnershipConflict");
+    }
+
+    #[test]
+    fn test_validate_node_taints_rejects_node_role_kubernetes_io_prefix() {
+        let taints = vec![NodeTaint {
+            key: "node-role.kubernetes.io/control-plane".to_string(),
+            value: None,
+            effect: TaintEffect::NoSchedule,
+        }];
+        let err = validate_node_taints(&taints)
+            .expect_err("node-role.kubernetes.io/ prefix must be rejected as reserved");
+        assert!(
+            err.contains("reserved") || err.contains("machineTemplate"),
+            "error should explain: {err}"
+        );
     }
 }
