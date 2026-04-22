@@ -710,6 +710,7 @@ async fn handle_active_phase(
                 );
             }
             provision_reclaim_agent_best_effort(&resource, &ctx, &node_ref).await;
+            reconcile_node_taints_best_effort(&resource, &ctx, &node_ref).await;
         }
         Ok(None) => {
             debug!(resource = %name, "CAPI Machine not found yet — skipping status enrichment");
@@ -757,6 +758,131 @@ async fn provision_reclaim_agent_best_effort(
             error = %e,
             "Failed to project reclaim-agent label/ConfigMap (non-fatal)"
         );
+    }
+}
+
+/// Best-effort reconciliation of user-defined Node taints from
+/// `spec.nodeTaints` onto the bound Node.
+///
+/// Runs from the `Active` phase once a `nodeRef` is known. Failures here are
+/// logged but must never block the reconcile — taint drift degrades workload
+/// scheduling preferences but does not threaten availability. If the outcome
+/// is `Applied` and the applied list differs from `status.appliedNodeTaints`,
+/// we persist the new list via a status merge-patch. Non-Ready / not-yet-
+/// materialised Nodes and ownership conflicts are logged at warn/debug; the
+/// Node watch will re-enqueue us when the Node transitions Ready.
+async fn reconcile_node_taints_best_effort(
+    resource: &Arc<ScheduledMachine>,
+    ctx: &Arc<Context>,
+    node_ref: &Option<crate::crd::NodeRef>,
+) {
+    // Termination guards (Phase 5). Each one is a correctness property, not a
+    // performance optimisation: applying taints on a resource that is about
+    // to be drained-and-deleted leaves a short-lived tainted Node behind,
+    // which confuses humans reading `kubectl describe node` post-mortem.
+    if resource.meta().deletion_timestamp.is_some() {
+        debug!(
+            resource = %resource.name_any(),
+            "ScheduledMachine is being deleted — skipping node taint reconcile"
+        );
+        return;
+    }
+    if resource.spec.kill_switch {
+        debug!(
+            resource = %resource.name_any(),
+            "kill_switch active — skipping node taint reconcile; drain is the sanctioned eviction path"
+        );
+        return;
+    }
+
+    let Some(node_name) = node_ref.as_ref().map(|n| n.name.as_str()) else {
+        return;
+    };
+    if node_name.is_empty() {
+        return;
+    }
+
+    let desired: &[crate::crd::NodeTaint] = resource.spec.node_taints.as_slice();
+    let previously_applied: &[crate::crd::NodeTaint] = resource
+        .status
+        .as_ref()
+        .map(|s| s.applied_node_taints.as_slice())
+        .unwrap_or(&[]);
+
+    if desired.is_empty() && previously_applied.is_empty() {
+        return;
+    }
+
+    let input = super::helpers::ReconcileNodeTaintsInput {
+        node_name,
+        desired,
+        previously_applied,
+    };
+    let outcome = match super::helpers::reconcile_node_taints(&ctx.client, input).await {
+        Ok(o) => o,
+        Err(e) => {
+            warn!(
+                resource = %resource.name_any(),
+                node = %node_name,
+                error = %e,
+                "Failed to reconcile node taints (non-fatal)"
+            );
+            return;
+        }
+    };
+
+    match outcome {
+        super::helpers::NodeTaintReconcileOutcome::NoNodeYet => {
+            debug!(
+                resource = %resource.name_any(),
+                node = %node_name,
+                "Node not materialised yet — deferring taint apply"
+            );
+        }
+        super::helpers::NodeTaintReconcileOutcome::NodeNotReady => {
+            debug!(
+                resource = %resource.name_any(),
+                node = %node_name,
+                "Node not Ready yet — deferring taint apply"
+            );
+        }
+        super::helpers::NodeTaintReconcileOutcome::Conflict { conflicts } => {
+            warn!(
+                resource = %resource.name_any(),
+                node = %node_name,
+                conflicts = conflicts.len(),
+                "Node taint ownership conflict — admin-owned taint blocks overwrite"
+            );
+        }
+        super::helpers::NodeTaintReconcileOutcome::Applied { applied } => {
+            if applied.as_slice() == previously_applied {
+                debug!(
+                    resource = %resource.name_any(),
+                    node = %node_name,
+                    "Node taints already up to date"
+                );
+                return;
+            }
+            let Some(namespace) = resource.namespace() else {
+                return;
+            };
+            let name = resource.name_any();
+            if let Err(e) = super::helpers::patch_applied_node_taints_status(
+                &ctx.client,
+                &namespace,
+                &name,
+                &applied,
+            )
+            .await
+            {
+                warn!(
+                    resource = %name,
+                    node = %node_name,
+                    error = %e,
+                    "Failed to patch status.appliedNodeTaints (non-fatal)"
+                );
+            }
+        }
     }
 }
 

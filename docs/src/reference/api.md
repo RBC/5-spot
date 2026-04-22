@@ -52,6 +52,13 @@ spec:
   gracefulShutdownTimeout: 5m
   nodeDrainTimeout: 5m
   killSwitch: false
+  killIfCommands:
+    - java
+    - idea
+  nodeTaints:
+    - key: workload
+      value: batch
+      effect: NoSchedule
 ```
 
 ### Spec Fields
@@ -127,6 +134,40 @@ Format: `<number><unit>` where unit is `s` (seconds), `m` (minutes), or `h` (hou
 (optional, boolean, default: `false`) When true, immediately removes the machine
 from the cluster and takes it out of rotation, bypassing the grace period.
 
+#### killIfCommands
+
+(optional, array of strings) Process patterns that trigger an emergency node reclaim.
+When non-empty, the 5-Spot controller installs the `5spot-reclaim-agent` DaemonSet
+on every Node backing this `ScheduledMachine`. The agent watches `/proc` for any
+process whose basename or argv matches one of these patterns and, on first match,
+annotates the Node to request immediate (non-graceful) removal from the cluster.
+
+When absent or empty, no agent is installed and behaviour is time-based scheduling only.
+Patterns are evaluated against both `/proc/<pid>/comm` (exact basename) and
+`/proc/<pid>/cmdline` (substring).
+
+#### nodeTaints
+
+(optional, array of NodeTaint, default: `[]`) User-defined taints applied to the
+Kubernetes Node once it is Ready. The controller owns and reconciles only the
+taints it applied (tracked in `status.appliedNodeTaints` plus the
+`5spot.finos.org/applied-taints` annotation on the Node). Admin-added taints on
+the same Node are left untouched. Taint identity is the tuple `(key, effect)`;
+`value` is mutable.
+
+Each `NodeTaint` has the following fields:
+
+- **key** (required, string): RFC-1123 qualified name. Max 253 chars total;
+  name-part ≤ 63. Reserved prefixes rejected at admission: `5spot.finos.org/`,
+  `kubernetes.io/`, `node.kubernetes.io/`, `node-role.kubernetes.io/`.
+- **value** (optional, string): Optional value, ≤ 63 chars. Mutable — changing
+  the value on an existing taint triggers an update, not an add/remove.
+- **effect** (required, enum): One of `NoSchedule`, `PreferNoSchedule`, `NoExecute`.
+
+Duplicate `(key, effect)` pairs are rejected at admission. Admin-added taints
+colliding on `(key, effect)` are surfaced as a `TaintOwnershipConflict` condition
+rather than overwritten.
+
 ### Status Fields
 
 #### phase
@@ -178,3 +219,13 @@ Mirrors the shape of CAPI's `Machine.status.nodeRef`:
 - **kind** (required, string): Kind of the referenced object (typically `Node`)
 - **name** (required, string): Name of the Node
 - **uid** (optional, string): UID of the Node, protecting against name reuse
+
+#### appliedNodeTaints
+
+(optional, array of NodeTaint, default: `[]`) The controller's record of truth
+for which taints it applied to the Node. Only entries in this list are eligible
+for removal on a subsequent reconcile — admin-added taints colliding on
+`(key, effect)` are surfaced as a `TaintOwnershipConflict` condition rather than
+overwritten.
+
+See `spec.nodeTaints` for the `NodeTaint` field schema.

@@ -119,6 +119,65 @@ Optional configuration applied to the created CAPI Machine.
 | `nodeDrainTimeout` | `string` | No | `5m` | Timeout for draining the node before deletion. |
 | `killSwitch` | `bool` | No | `false` | Operator-driven kill switch. Immediately remove machine if `true`; reset to `false` to return to scheduled service. |
 | `killIfCommands` | `[]string` | No | `null` | Node-side process-match kill switch. When non-empty, the reclaim agent DaemonSet is installed on the backing node and watches `/proc` for any process whose `comm` or `cmdline` matches an entry. First match triggers `EmergencyRemove` + auto-disables the schedule. See [Emergency Reclaim](./emergency-reclaim.md). |
+| `nodeTaints` | `[]NodeTaint` | No | `[]` | User-defined taints applied to the Kubernetes Node once it is Ready. The controller owns and reconciles only the taints it applied; admin-added taints on the same Node are left untouched. See [Node Taints](#node-taints) below. |
+
+## Node Taints
+
+`spec.nodeTaints` declares taints that must exist on the Kubernetes Node once
+it joins the cluster and reports `Ready=True`. The controller patches them on
+via server-side apply, tracks what it applied in `status.appliedNodeTaints`,
+and reconciles drift on every Node change (event-driven via the Node watch —
+no polling).
+
+### Shape
+
+```yaml
+spec:
+  nodeTaints:
+    - key: workload
+      value: batch
+      effect: NoSchedule
+    - key: dedicated
+      value: ml
+      effect: NoExecute
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `key` | `string` | Yes | RFC-1123 qualified name. Max 253 chars total; name-part ≤ 63. Reserved prefixes (`5spot.finos.org/`, `kubernetes.io/`, `node.kubernetes.io/`, `node-role.kubernetes.io/`) are rejected at admission. |
+| `value` | `string` | No | Optional value, ≤ 63 chars. Mutable — changing the value on an existing taint triggers an update, not an add/remove. |
+| `effect` | `enum` | Yes | One of `NoSchedule`, `PreferNoSchedule`, `NoExecute`. Identity is the tuple `(key, effect)`. |
+
+### Ownership model
+
+Taint identity is `(key, effect)`; the `value` is mutable. The controller only
+touches taints it previously applied (tracked in `status.appliedNodeTaints` and
+recorded in the annotation `5spot.finos.org/applied-taints` on the Node).
+
+- **Admin-added taint with the same `(key, effect)`**: surfaces as a
+  `TaintOwnershipConflict` condition. The controller refuses to overwrite.
+- **Admin-added taint with a different `(key, effect)`**: ignored — left in
+  place on the Node across reconciles.
+- **Spec shrinks (taint removed)**: the controller removes only taints it
+  previously applied. If the admin has mutated the value since we applied it,
+  the controller refuses to remove and surfaces a conflict.
+
+### Status condition: `NodeTainted`
+
+| status | reason | meaning |
+|--------|--------|---------|
+| `Unknown` | `NoNodeYet` | `status.nodeRef` is populated but the Node object is not yet materialised in the API server. |
+| `False` | `NodeNotReady` | Node exists but `Ready != True`. Will re-reconcile on the Node watch event. |
+| `False` | `PatchFailed` | k8s API returned an error on the last patch. Exponential backoff applies. |
+| `False` | `TaintOwnershipConflict` | An admin taint collides with a declared `(key, effect)`. The controller refuses to overwrite until the spec changes. |
+| `True` | `Applied` | All declared taints are present on the Node. |
+
+### What it does not manage
+
+- **Tolerations** — a Pod-side concern. Workloads must declare tolerations
+  themselves to schedule onto tainted Nodes.
+- **Node labels** — separate feature with different conflict semantics.
+- **Admin-added taints** — never removed or overwritten by the controller.
 
 ## Status Fields
 
@@ -135,6 +194,7 @@ The status subresource contains the current state:
 | `infrastructureRef` | `ObjectReference` | Reference to created infrastructure resource |
 | `nodeRef` | `NodeRef` | Reference to the Kubernetes Node (apiVersion, kind, name, uid) once provisioned |
 | `providerID` | `string` | Provider-assigned machine identifier (copied from CAPI `Machine.spec.providerID`) |
+| `appliedNodeTaints` | `[]NodeTaint` | Taints the controller has applied to the Node. Source of truth for ownership — only entries here are eligible for removal. See [Node Taints](#node-taints). |
 | `lastScheduledTime` | `Time` | Last time machine was created |
 | `nextActivation` | `Time` | Next scheduled activation time |
 | `nextCleanup` | `Time` | Time when machine will be cleaned up |

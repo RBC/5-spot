@@ -1,0 +1,64 @@
+# Example ScheduledMachine with INVALID nodeTaints — intentionally rejected
+# by the ValidatingAdmissionPolicy (see deploy/admission/validatingadmissionpolicy.yaml).
+#
+# Apply with:
+#   kubectl apply -f examples/scheduledmachine-bad-taint.yaml
+#
+# Expected result: the API server rejects the resource with the VAP's CEL
+# error message — the reconciler never sees the bad spec. Each taint below
+# trips a different rule:
+#
+#   1. `5spot.finos.org/internal` — reserved prefix (rule 17)
+#   2. `node.kubernetes.io/unschedulable` — reserved kubelet prefix (rule 18)
+#   3. duplicate `(workload, NoSchedule)` entries — uniqueness (rule 19)
+
+apiVersion: 5spot.finos.org/v1alpha1
+kind: ScheduledMachine
+metadata:
+  name: bad-taint-example
+  namespace: default
+spec:
+  clusterName: my-k0s-cluster
+
+  schedule:
+    daysOfWeek:
+      - mon-fri
+    hoursOfDay:
+      - "9-17"
+    timezone: UTC
+    enabled: true
+
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    kind: K0sWorkerConfig
+    spec:
+      version: v1.30.0+k0s.0
+
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: RemoteMachine
+    spec:
+      address: 192.168.1.100
+      port: 22
+      user: admin
+
+  nodeTaints:
+    # Rule 17 — reserved 5spot.finos.org/ prefix
+    - key: 5spot.finos.org/internal
+      value: reserved
+      effect: NoSchedule
+    # Rule 18 — reserved kubelet prefix
+    - key: node.kubernetes.io/unschedulable
+      effect: NoSchedule
+    # Rule 19 — duplicate (key, effect)
+    - key: workload
+      value: batch
+      effect: NoSchedule
+    - key: workload
+      value: interactive
+      effect: NoSchedule
+
+  priority: 50
+  gracefulShutdownTimeout: 5m
+  nodeDrainTimeout: 5m
+  killSwitch: false

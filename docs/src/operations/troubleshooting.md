@@ -317,6 +317,71 @@ kubectl get events --field-selector reason=EmergencyReclaimDisabledSchedule \
 kubectl get scheduledmachine/<name> -o jsonpath='{.metadata.generation} {.status.observedGeneration}'
 ```
 
+## Node Taints
+
+### Taints not appearing on Node
+
+`spec.nodeTaints` is declared on a ScheduledMachine, the machine is Active,
+but the Node does not have the expected taints. Walk the `NodeTainted`
+condition on the CR first — it tells you exactly which layer is failing.
+
+```bash
+kubectl get scheduledmachine <name> \
+  -o jsonpath='{.status.conditions[?(@.type=="NodeTainted")]}{"\n"}'
+```
+
+Three failure reasons, each with its own fix:
+
+**`reason=NoNodeYet` (status=Unknown)**
+CAPI populated `status.nodeRef` but the Node object is not yet in the API
+server. This is usually a few seconds after Machine creation. The Node watch
+will re-enqueue us automatically — no action needed. If stuck for > 1 min,
+check that CAPI's Machine actually materialised the Node:
+
+```bash
+kubectl get machine <name>-machine -o jsonpath='{.status.nodeRef}{"\n"}'
+kubectl get nodes <node-name>
+```
+
+**`reason=NodeNotReady` (status=False)**
+Node exists but `Ready != True`. Kubelet hasn't registered, networking is
+degraded, or CNI is failing. Look at the Node's own conditions first:
+
+```bash
+kubectl describe node <node-name> | sed -n '/Conditions:/,/Addresses:/p'
+```
+
+Fix the underlying Node problem; the controller will re-reconcile on the next
+Node `Ready` transition.
+
+**`reason=TaintOwnershipConflict` (status=False)**
+An admin taint exists with the same `(key, effect)` tuple as a declared
+`spec.nodeTaints` entry. The controller refuses to overwrite admin-owned
+taints. Inspect the current state:
+
+```bash
+kubectl get node <node-name> -o jsonpath='{.spec.taints}{"\n"}'
+kubectl get node <node-name> \
+  -o jsonpath='{.metadata.annotations.5spot\.finos\.org/applied-taints}{"\n"}'
+```
+
+Resolve by either removing the admin taint (`kubectl taint nodes <node> key:effect-`)
+or changing the `spec.nodeTaints` entry so the `(key, effect)` no longer
+collides. Note: the annotation `5spot.finos.org/applied-taints` lists the
+keys we own; any taint *not* in that list belongs to the admin.
+
+**`reason=PatchFailed` (status=False)**
+A non-404, non-conflict API error on the Node PATCH. Check controller logs for
+the exact kube error (RBAC rejection, API server unreachable, etc.):
+
+```bash
+kubectl logs -n 5spot-system -l app=5spot-controller \
+  | grep -E "node_taint|appliedNodeTaints"
+```
+
+The controller retries with exponential backoff on transient failures. For
+RBAC issues, confirm the controller ClusterRole grants `patch` on `nodes`.
+
 ## Error Messages
 
 ### "Resource not owned by this instance"

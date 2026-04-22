@@ -215,6 +215,10 @@ pub const CONDITION_TYPE_MACHINE_READY: &str = "MachineReady";
 /// `ReferencesValid` condition type
 pub const CONDITION_TYPE_REFERENCES_VALID: &str = "ReferencesValid";
 
+/// `NodeTainted` condition type — tracks user-declared Node taint application.
+/// See `~/dev/roadmaps/completed-5spot-user-defined-node-taints.md` Phase 2.
+pub const CONDITION_TYPE_NODE_TAINTED: &str = "NodeTainted";
+
 // ============================================================================
 // Condition Statuses
 // ============================================================================
@@ -279,6 +283,37 @@ pub const REASON_NODE_DRAINED: &str = "NodeDrained";
 
 /// Reason: Node drain failed
 pub const REASON_NODE_DRAIN_FAILED: &str = "NodeDrainFailed";
+
+/// Reason: all declared `spec.nodeTaints` are present on the Node.
+pub const REASON_NODE_TAINTS_APPLIED: &str = "Applied";
+
+/// Reason: Node exists but its `Ready` condition is not `True` yet, so we
+/// deliberately defer applying taints to avoid racing with kubelet init.
+pub const REASON_NODE_NOT_READY: &str = "NodeNotReady";
+
+/// Reason: the most recent `PATCH` against the Node's `spec.taints` returned
+/// an API error. Next reconcile will retry with backoff.
+pub const REASON_NODE_TAINT_PATCH_FAILED: &str = "PatchFailed";
+
+/// Reason: `status.nodeRef` is not populated yet (CAPI has not claimed a Node
+/// for this machine). Condition status is `Unknown` in this case.
+pub const REASON_NO_NODE_YET: &str = "NoNodeYet";
+
+/// Reason: an admin-added taint on the Node collides on `(key, effect)` with
+/// an entry in `spec.nodeTaints`. The controller refuses to overwrite and
+/// surfaces this condition so the operator can reconcile ownership.
+pub const REASON_TAINT_OWNERSHIP_CONFLICT: &str = "TaintOwnershipConflict";
+
+/// Server-side-apply field manager used when the controller patches Node
+/// `spec.taints`. Distinct from other field managers so a `kubectl describe
+/// node` shows ownership clearly.
+pub const NODE_TAINT_FIELD_MANAGER: &str = "5spot-controller-node-taints";
+
+/// Annotation written on every Node whose taints we manage, carrying a JSON
+/// array of `(key, effect)` tuples the controller owns. Lets a second
+/// controller (or a human) see our ownership at a glance without reading the
+/// `ScheduledMachine` CR.
+pub const APPLIED_TAINTS_ANNOTATION: &str = "5spot.finos.org/applied-taints";
 
 // ============================================================================
 // SSH and Machine Defaults
