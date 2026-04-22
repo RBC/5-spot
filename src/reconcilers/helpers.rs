@@ -2225,6 +2225,396 @@ pub async fn reconcile_reclaim_agent_provision(
     Ok(())
 }
 
+// ============================================================================
+// Node taint diff + apply (Phase 3 of user-defined-node-taints roadmap)
+// ============================================================================
+
+/// Plan computed by [`diff_node_taints`] describing exactly how a Node's
+/// `spec.taints` list needs to change to reach the desired state while
+/// respecting admin-owned taints.
+///
+/// The plan is a pure data structure — it's the inputs that [`apply_node_taints`]
+/// then turns into a single `PATCH /api/v1/nodes/<name>` round-trip.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NodeTaintPlan {
+    /// Taints in `desired` that are not present on the current Node.
+    pub to_add: Vec<crate::crd::NodeTaint>,
+
+    /// Taints on the current Node (that we previously applied) whose value has
+    /// drifted from `desired`. Only taints we own — admin-added collisions go
+    /// into `conflicts` instead.
+    pub to_update: Vec<crate::crd::NodeTaint>,
+
+    /// Taints we previously applied that are absent from `desired`. Bounded by
+    /// `previously_applied ∩ current` and further restricted to cases where
+    /// the current Node value still matches what we applied — if the admin
+    /// mutated it, we surface a conflict instead of silently overwriting.
+    pub to_remove: Vec<crate::crd::NodeTaint>,
+
+    /// Desired taints already present on the Node with matching value.
+    /// Populated to give the caller a precise "no-op" check via [`Self::is_noop`].
+    pub unchanged: Vec<crate::crd::NodeTaint>,
+
+    /// Entries from `desired` (or `previously_applied`) that collide with an
+    /// admin-added taint on `(key, effect)`. The controller will NOT overwrite
+    /// these — surface a `TaintOwnershipConflict` condition instead.
+    pub conflicts: Vec<crate::crd::NodeTaint>,
+}
+
+impl NodeTaintPlan {
+    /// `true` when the plan has zero mutating entries — the caller can skip
+    /// the PATCH round-trip entirely.
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        self.to_add.is_empty() && self.to_update.is_empty() && self.to_remove.is_empty()
+    }
+}
+
+/// Compute the taint-reconciliation plan without performing any IO.
+///
+/// Identity is the tuple `(key, effect)` — value is mutable. See
+/// [`NodeTaintPlan`] for the exact semantics of each output bucket.
+///
+/// A current taint whose `effect` string doesn't match any [`crate::crd::TaintEffect`]
+/// variant (because an admin applied it with an unknown effect, or a future
+/// Kubernetes version added a new one) is treated as opaque admin state and
+/// left alone.
+#[must_use]
+pub fn diff_node_taints(
+    current: &[k8s_openapi::api::core::v1::Taint],
+    desired: &[crate::crd::NodeTaint],
+    previously_applied: &[crate::crd::NodeTaint],
+) -> NodeTaintPlan {
+    use crate::crd::{NodeTaint, TaintEffect};
+
+    fn effect_from_str(s: &str) -> Option<TaintEffect> {
+        match s {
+            "NoSchedule" => Some(TaintEffect::NoSchedule),
+            "PreferNoSchedule" => Some(TaintEffect::PreferNoSchedule),
+            "NoExecute" => Some(TaintEffect::NoExecute),
+            _ => None,
+        }
+    }
+
+    fn find_current<'a>(
+        current: &'a [k8s_openapi::api::core::v1::Taint],
+        key: &str,
+        effect: &TaintEffect,
+    ) -> Option<&'a k8s_openapi::api::core::v1::Taint> {
+        current
+            .iter()
+            .find(|c| c.key == key && effect_from_str(&c.effect).as_ref() == Some(effect))
+    }
+
+    fn find_applied<'a>(
+        previously_applied: &'a [NodeTaint],
+        key: &str,
+        effect: &TaintEffect,
+    ) -> Option<&'a NodeTaint> {
+        previously_applied
+            .iter()
+            .find(|p| p.key == key && &p.effect == effect)
+    }
+
+    let mut plan = NodeTaintPlan::default();
+
+    for want in desired {
+        match find_current(current, &want.key, &want.effect) {
+            None => plan.to_add.push(want.clone()),
+            Some(cur) => {
+                let cur_value = cur.value.as_deref();
+                let want_value = want.value.as_deref();
+                if cur_value == want_value {
+                    plan.unchanged.push(want.clone());
+                    continue;
+                }
+                let we_own_current = find_applied(previously_applied, &want.key, &want.effect)
+                    .is_some_and(|p| p.value.as_deref() == cur_value);
+                if we_own_current {
+                    plan.to_update.push(want.clone());
+                } else {
+                    plan.conflicts.push(want.clone());
+                }
+            }
+        }
+    }
+
+    for applied in previously_applied {
+        let still_desired = desired
+            .iter()
+            .any(|d| d.key == applied.key && d.effect == applied.effect);
+        if still_desired {
+            continue;
+        }
+        let Some(cur) = find_current(current, &applied.key, &applied.effect) else {
+            continue;
+        };
+        if cur.value.as_deref() == applied.value.as_deref() {
+            plan.to_remove.push(applied.clone());
+        } else {
+            plan.conflicts.push(applied.clone());
+        }
+    }
+
+    plan
+}
+
+/// Apply a [`NodeTaintPlan`] to the named Node via a single server-side apply
+/// PATCH, and write the `5spot.finos.org/applied-taints` ownership annotation.
+///
+/// Reads the Node's current `spec.taints` first, rebuilds the target list by
+/// (a) dropping entries in `plan.to_remove`, (b) overriding entries with the
+/// new value for `plan.to_update`, and (c) appending `plan.to_add`, then
+/// PATCHes the whole list under the
+/// [`NODE_TAINT_FIELD_MANAGER`](crate::constants::NODE_TAINT_FIELD_MANAGER)
+/// field-manager so our ownership is explicit in `managedFields`.
+///
+/// # Errors
+/// Returns [`ReconcilerError::KubeError`] on any API failure. A no-op plan
+/// returns `Ok(())` without touching the network.
+pub async fn apply_node_taints(
+    client: &Client,
+    node_name: &str,
+    plan: &NodeTaintPlan,
+) -> Result<(), ReconcilerError> {
+    use crate::constants::{APPLIED_TAINTS_ANNOTATION, NODE_TAINT_FIELD_MANAGER};
+    use crate::crd::TaintEffect;
+    use k8s_openapi::api::core::v1::{Node, Taint};
+
+    if plan.is_noop() {
+        debug!(node = %node_name, "Node taint plan is a no-op; skipping PATCH");
+        return Ok(());
+    }
+
+    let nodes: Api<Node> = Api::all(client.clone());
+    let current_node = nodes.get(node_name).await.map_err(|e| {
+        error!(node = %node_name, error = %e, "Failed to GET Node for taint apply");
+        ReconcilerError::KubeError(e)
+    })?;
+
+    let current_taints = current_node
+        .spec
+        .as_ref()
+        .and_then(|s| s.taints.clone())
+        .unwrap_or_default();
+
+    fn effect_str(e: &TaintEffect) -> &'static str {
+        match e {
+            TaintEffect::NoSchedule => "NoSchedule",
+            TaintEffect::PreferNoSchedule => "PreferNoSchedule",
+            TaintEffect::NoExecute => "NoExecute",
+        }
+    }
+
+    fn matches(t: &Taint, key: &str, effect: &TaintEffect) -> bool {
+        t.key == key && t.effect == effect_str(effect)
+    }
+
+    let mut target: Vec<Taint> = current_taints
+        .into_iter()
+        .filter(|t| !plan.to_remove.iter().any(|r| matches(t, &r.key, &r.effect)))
+        .map(|t| {
+            if let Some(update) = plan
+                .to_update
+                .iter()
+                .find(|u| matches(&t, &u.key, &u.effect))
+            {
+                Taint {
+                    key: update.key.clone(),
+                    value: update.value.clone(),
+                    effect: effect_str(&update.effect).to_string(),
+                    time_added: None,
+                }
+            } else {
+                t
+            }
+        })
+        .collect();
+
+    for want in &plan.to_add {
+        target.push(Taint {
+            key: want.key.clone(),
+            value: want.value.clone(),
+            effect: effect_str(&want.effect).to_string(),
+            time_added: None,
+        });
+    }
+
+    let owned: Vec<serde_json::Value> = plan
+        .to_add
+        .iter()
+        .chain(plan.to_update.iter())
+        .chain(plan.unchanged.iter())
+        .map(|t| serde_json::json!({"key": t.key, "effect": effect_str(&t.effect)}))
+        .collect();
+    let annotation_value = serde_json::to_string(&owned).unwrap_or_else(|_| "[]".to_string());
+
+    let patch = json!({
+        "metadata": {
+            "annotations": {
+                APPLIED_TAINTS_ANNOTATION: annotation_value,
+            }
+        },
+        "spec": {
+            "taints": target,
+        }
+    });
+
+    let params = PatchParams::apply(NODE_TAINT_FIELD_MANAGER).force();
+    nodes
+        .patch(node_name, &params, &Patch::Apply(&patch))
+        .await
+        .map_err(|e| {
+            error!(node = %node_name, error = %e, "Failed to PATCH Node taints");
+            ReconcilerError::KubeError(e)
+        })?;
+
+    info!(
+        node = %node_name,
+        added = plan.to_add.len(),
+        updated = plan.to_update.len(),
+        removed = plan.to_remove.len(),
+        "Applied Node taints"
+    );
+    Ok(())
+}
+
+// ============================================================================
+// Node taint orchestration (Phase 4 of user-defined-node-taints roadmap)
+// ============================================================================
+
+/// Input bundle for [`reconcile_node_taints`]. Grouped into a struct so the
+/// function signature stays short and clippy-happy.
+#[derive(Clone, Copy)]
+pub struct ReconcileNodeTaintsInput<'a> {
+    /// Name of the Node this `ScheduledMachine` is bound to (via `status.nodeRef`).
+    pub node_name: &'a str,
+    /// Desired taints from `ScheduledMachineSpec.node_taints`.
+    pub desired: &'a [crate::crd::NodeTaint],
+    /// Taints the controller has previously applied (from `status.appliedNodeTaints`).
+    pub previously_applied: &'a [crate::crd::NodeTaint],
+}
+
+/// Result of one `reconcile_node_taints` call. The caller turns this into a
+/// `NodeTainted` condition update (see `CONDITION_TYPE_NODE_TAINTED` reasons).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeTaintReconcileOutcome {
+    /// Node API returned 404 — CAPI has a nodeRef but the Node object isn't
+    /// materialised yet. Caller should surface `NodeTainted=Unknown/NoNodeYet`.
+    NoNodeYet,
+    /// Node exists but `Ready != True` — caller should surface
+    /// `NodeTainted=False/NodeNotReady` and rely on the Node watch to re-enqueue.
+    NodeNotReady,
+    /// The node taint plan ran to completion (possibly no-op). `applied` is
+    /// the new `status.appliedNodeTaints` value the caller should persist.
+    Applied { applied: Vec<crate::crd::NodeTaint> },
+    /// One or more `(key, effect)` pairs collide with admin-owned taints.
+    /// Caller should surface `NodeTainted=False/TaintOwnershipConflict` and
+    /// stop retrying until spec changes.
+    Conflict {
+        conflicts: Vec<crate::crd::NodeTaint>,
+    },
+}
+
+/// Orchestrate the taint reconcile for a single Node: GET the Node, verify
+/// `Ready`, compute the plan, and (if non-no-op) PATCH.
+///
+/// This is the function `handle_active_phase` calls once `status.nodeRef` is
+/// populated. It is deliberately non-async-recursive and returns a structured
+/// outcome rather than a naked `Result` — callers need to both surface a
+/// condition *and* know whether to requeue short (transient) or long (stable).
+///
+/// # Errors
+/// Returns [`ReconcilerError::KubeError`] only for non-404 GET failures and
+/// for PATCH failures. A 404 on the Node is mapped to
+/// [`NodeTaintReconcileOutcome::NoNodeYet`]; not-Ready is
+/// [`NodeTaintReconcileOutcome::NodeNotReady`]; admin conflicts go into
+/// [`NodeTaintReconcileOutcome::Conflict`]. None of those are errors.
+pub async fn reconcile_node_taints(
+    client: &Client,
+    input: ReconcileNodeTaintsInput<'_>,
+) -> Result<NodeTaintReconcileOutcome, ReconcilerError> {
+    use k8s_openapi::api::core::v1::Node;
+
+    let nodes: Api<Node> = Api::all(client.clone());
+    let node = match nodes.get(input.node_name).await {
+        Ok(n) => n,
+        Err(kube::Error::Api(e)) if e.code == 404 => {
+            debug!(node = %input.node_name, "Node not materialised yet — NoNodeYet");
+            return Ok(NodeTaintReconcileOutcome::NoNodeYet);
+        }
+        Err(e) => {
+            error!(node = %input.node_name, error = %e, "Failed to GET Node for taint reconcile");
+            return Err(ReconcilerError::KubeError(e));
+        }
+    };
+
+    let is_ready = node
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .map(|cs| cs.iter().any(|c| c.type_ == "Ready" && c.status == "True"))
+        .unwrap_or(false);
+    if !is_ready {
+        debug!(node = %input.node_name, "Node not Ready yet — deferring taint apply");
+        return Ok(NodeTaintReconcileOutcome::NodeNotReady);
+    }
+
+    let current_taints = node
+        .spec
+        .as_ref()
+        .and_then(|s| s.taints.clone())
+        .unwrap_or_default();
+    let plan = diff_node_taints(&current_taints, input.desired, input.previously_applied);
+
+    if !plan.conflicts.is_empty() {
+        warn!(
+            node = %input.node_name,
+            conflicts = plan.conflicts.len(),
+            "Node taint ownership conflict — refusing to overwrite admin-owned taints"
+        );
+        return Ok(NodeTaintReconcileOutcome::Conflict {
+            conflicts: plan.conflicts,
+        });
+    }
+
+    apply_node_taints(client, input.node_name, &plan).await?;
+
+    let applied: Vec<_> = input.desired.to_vec();
+    Ok(NodeTaintReconcileOutcome::Applied { applied })
+}
+
+/// Patch `ScheduledMachine.status.appliedNodeTaints` to the given list.
+///
+/// Thin wrapper around the status subresource using a Merge patch, mirroring
+/// [`patch_machine_refs_status`]. No-op when `applied` equals the caller's
+/// belief — the caller should only invoke this when the list has changed.
+///
+/// # Errors
+/// Returns [`ReconcilerError`] on patch failure.
+pub async fn patch_applied_node_taints_status(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    applied: &[crate::crd::NodeTaint],
+) -> Result<(), ReconcilerError> {
+    let patch = json!({
+        "status": {
+            "appliedNodeTaints": applied,
+        }
+    });
+    let api: Api<ScheduledMachine> = Api::namespaced(client.clone(), namespace);
+    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    debug!(
+        resource = %name,
+        namespace = %namespace,
+        count = applied.len(),
+        "Patched status.appliedNodeTaints"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "helpers_tests.rs"]
 mod helpers_tests;

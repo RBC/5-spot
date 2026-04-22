@@ -1775,6 +1775,7 @@ mod tests {
                 graceful_shutdown_timeout: "5m".to_string(),
                 node_drain_timeout: "5m".to_string(),
                 kill_switch: false,
+                node_taints: vec![],
                 kill_if_commands: None,
             },
             status: None,
@@ -2433,5 +2434,869 @@ mod tests {
             "labels must contain exactly one key ({RECLAIM_AGENT_LABEL}) — \
              other labels on the Node must survive untouched"
         );
+    }
+
+    // ========================================================================
+    // reconcile_reclaim_agent_provision — mock-API orchestrator tests
+    //
+    // The pure-helper tests above pin the request-body shape; these tests
+    // pin the async request *sequence* against a mock kube client. Together
+    // they give end-to-end coverage of the Phase-2.5 projection contract
+    // without needing a real cluster:
+    //   1. Always: cluster-scoped Node merge-patch for the reclaim-agent label.
+    //   2a. Commands non-empty: server-side apply of the per-node ConfigMap
+    //       in 5spot-system with fieldManager=5spot-controller-reclaim-agent
+    //       and force=true.
+    //   2b. Commands empty: DELETE of the same per-node ConfigMap — a 404
+    //       is benign so a re-run after partial tear-down completes cleanly.
+    //   3. Error propagation: a 5xx on the Node label PATCH must short-
+    //       circuit before the ConfigMap work (no second request issued).
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_reconcile_reclaim_agent_provision_non_empty_patches_label_then_applies_cm() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+
+            let (req, send) = h.next_request().await.expect("expected Node PATCH");
+            assert_eq!(req.method(), http::Method::PATCH);
+            assert!(
+                req.uri().path().ends_with("/api/v1/nodes/node-a"),
+                "must PATCH the cluster-scoped Node, got: {}",
+                req.uri().path()
+            );
+            let body = collect_json_body(req.into_body()).await;
+            assert_eq!(
+                body.pointer("/metadata/labels/5spot.finos.org~1reclaim-agent")
+                    .and_then(|v| v.as_str()),
+                Some("enabled"),
+                "label PATCH must set the reclaim-agent label to 'enabled'"
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "apiVersion": "v1",
+                            "kind": "Node",
+                            "metadata": { "name": "node-a", "resourceVersion": "2" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            );
+
+            let (req, send) = h.next_request().await.expect("expected ConfigMap apply");
+            assert_eq!(req.method(), http::Method::PATCH);
+            let path = req.uri().path().to_string();
+            assert!(
+                path.contains("/api/v1/namespaces/5spot-system/configmaps/reclaim-agent-node-a"),
+                "apply must target the per-node CM in 5spot-system, got: {path}"
+            );
+            let query = req.uri().query().unwrap_or("");
+            assert!(
+                query.contains("fieldManager=5spot-controller-reclaim-agent"),
+                "SSA must use the dedicated field manager (distinct from the \
+                 main reconciler) so audit logs attribute projection writes \
+                 separately — got query: {query}"
+            );
+            assert!(
+                query.contains("force=true"),
+                "SSA must force so hand-edited ConfigMap fields snap back to \
+                 the controller's view — got query: {query}"
+            );
+            let body = collect_json_body(req.into_body()).await;
+            assert_eq!(
+                body.pointer("/metadata/name").and_then(|v| v.as_str()),
+                Some("reclaim-agent-node-a"),
+                "applied CM body must carry the per-node name"
+            );
+            assert!(
+                body.pointer("/data/reclaim.toml").is_some(),
+                "applied CM body must carry the reclaim.toml key the agent watches"
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "apiVersion": "v1",
+                            "kind": "ConfigMap",
+                            "metadata": {
+                                "name": "reclaim-agent-node-a",
+                                "namespace": "5spot-system",
+                                "resourceVersion": "3"
+                            },
+                            "data": { "reclaim.toml": "" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            );
+        });
+
+        let result = reconcile_reclaim_agent_provision(
+            &client,
+            "node-a",
+            &["java".to_string(), "idea".to_string()],
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "happy path must return Ok(()), got: {result:?}"
+        );
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_reclaim_agent_provision_empty_patches_label_then_deletes_cm() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+
+            let (req, send) = h.next_request().await.expect("expected Node PATCH");
+            assert_eq!(req.method(), http::Method::PATCH);
+            assert!(req.uri().path().ends_with("/api/v1/nodes/node-b"));
+            let body = collect_json_body(req.into_body()).await;
+            assert!(
+                body.pointer("/metadata/labels/5spot.finos.org~1reclaim-agent")
+                    .is_some_and(serde_json::Value::is_null),
+                "empty-commands label PATCH must set the label to JSON null \
+                 (merge-patch delete sentinel) so kubectl get -l stops \
+                 matching the node"
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "apiVersion": "v1",
+                            "kind": "Node",
+                            "metadata": { "name": "node-b", "resourceVersion": "2" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            );
+
+            let (req, send) = h.next_request().await.expect("expected ConfigMap DELETE");
+            assert_eq!(req.method(), http::Method::DELETE);
+            assert!(
+                req.uri()
+                    .path()
+                    .contains("/api/v1/namespaces/5spot-system/configmaps/reclaim-agent-node-b"),
+                "DELETE must target the per-node CM in 5spot-system, got: {}",
+                req.uri().path()
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "kind": "Status",
+                            "apiVersion": "v1",
+                            "status": "Success"
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            );
+        });
+
+        let result = reconcile_reclaim_agent_provision(&client, "node-b", &[]).await;
+        assert!(
+            result.is_ok(),
+            "empty-commands path must return Ok(()), got: {result:?}"
+        );
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_reclaim_agent_provision_empty_404_on_delete_is_benign_ok() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+
+            let (_req, send) = h.next_request().await.expect("expected Node PATCH");
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "apiVersion": "v1",
+                            "kind": "Node",
+                            "metadata": { "name": "node-c", "resourceVersion": "2" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            );
+
+            let (_req, send) = h.next_request().await.expect("expected ConfigMap DELETE");
+            send.send_response(
+                Response::builder()
+                    .status(404)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(
+                        404,
+                        "configmaps \"reclaim-agent-node-c\" not found",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let result = reconcile_reclaim_agent_provision(&client, "node-c", &[]).await;
+        assert!(
+            result.is_ok(),
+            "404 on tear-down delete must be benign Ok(()) so a re-run after \
+             a partial prior tear-down completes cleanly, got: {result:?}"
+        );
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_reclaim_agent_provision_label_patch_500_propagates_and_short_circuits()
+    {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+
+            let (_req, send) = h.next_request().await.expect("expected Node PATCH");
+            send.send_response(
+                Response::builder()
+                    .status(500)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(500, "internal server error")))
+                    .unwrap(),
+            );
+        });
+
+        let result =
+            reconcile_reclaim_agent_provision(&client, "node-d", &["java".to_string()]).await;
+
+        assert!(
+            matches!(
+                result,
+                Err(crate::reconcilers::ReconcilerError::KubeError(_))
+            ),
+            "Node label PATCH 500 must propagate as KubeError (no silent \
+             degradation — best-effort is at the caller level, not here), \
+             got: {result:?}"
+        );
+        srv.await.unwrap();
+    }
+
+    // ========================================================================
+    // Phase 3 — diff_node_taints pure helper
+    // ========================================================================
+
+    use crate::crd::{NodeTaint, TaintEffect};
+    use k8s_openapi::api::core::v1::Taint as CoreTaint;
+
+    fn desired(key: &str, value: Option<&str>, effect: TaintEffect) -> NodeTaint {
+        NodeTaint {
+            key: key.to_string(),
+            value: value.map(str::to_string),
+            effect,
+        }
+    }
+
+    fn core_taint(key: &str, value: Option<&str>, effect: &str) -> CoreTaint {
+        CoreTaint {
+            key: key.to_string(),
+            value: value.map(str::to_string),
+            effect: effect.to_string(),
+            time_added: None,
+        }
+    }
+
+    #[test]
+    fn test_diff_node_taints_all_empty() {
+        let plan = diff_node_taints(&[], &[], &[]);
+        assert!(plan.to_add.is_empty());
+        assert!(plan.to_update.is_empty());
+        assert!(plan.to_remove.is_empty());
+        assert!(plan.unchanged.is_empty());
+        assert!(plan.conflicts.is_empty());
+        assert!(
+            plan.is_noop(),
+            "fully-empty plan must report is_noop() == true"
+        );
+    }
+
+    #[test]
+    fn test_diff_node_taints_add_only() {
+        let desired_list = vec![desired("workload", Some("batch"), TaintEffect::NoSchedule)];
+        let plan = diff_node_taints(&[], &desired_list, &[]);
+        assert_eq!(plan.to_add, desired_list);
+        assert!(plan.to_update.is_empty());
+        assert!(plan.to_remove.is_empty());
+        assert!(plan.unchanged.is_empty());
+        assert!(plan.conflicts.is_empty());
+        assert!(!plan.is_noop());
+    }
+
+    #[test]
+    fn test_diff_node_taints_unchanged_when_already_applied() {
+        let desired_list = vec![desired("workload", Some("batch"), TaintEffect::NoSchedule)];
+        let current = vec![core_taint("workload", Some("batch"), "NoSchedule")];
+        let previously = desired_list.clone();
+        let plan = diff_node_taints(&current, &desired_list, &previously);
+        assert!(plan.to_add.is_empty());
+        assert!(plan.to_update.is_empty());
+        assert!(plan.to_remove.is_empty());
+        assert_eq!(plan.unchanged, desired_list);
+        assert!(plan.is_noop(), "already-applied state must be a no-op");
+    }
+
+    #[test]
+    fn test_diff_node_taints_update_when_value_changes_and_we_own_it() {
+        let desired_list = vec![desired("workload", Some("newval"), TaintEffect::NoSchedule)];
+        let current = vec![core_taint("workload", Some("oldval"), "NoSchedule")];
+        let previously = vec![desired("workload", Some("oldval"), TaintEffect::NoSchedule)];
+        let plan = diff_node_taints(&current, &desired_list, &previously);
+        assert_eq!(plan.to_update, desired_list);
+        assert!(plan.to_add.is_empty());
+        assert!(plan.to_remove.is_empty());
+        assert!(plan.unchanged.is_empty());
+        assert!(plan.conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_diff_node_taints_conflict_when_value_changes_but_we_do_not_own_it() {
+        // Admin independently added (workload, NoSchedule) with a different value.
+        // We do NOT own it (not in previously_applied) — surface as conflict, do NOT overwrite.
+        let desired_list = vec![desired("workload", Some("ours"), TaintEffect::NoSchedule)];
+        let current = vec![core_taint("workload", Some("admin"), "NoSchedule")];
+        let previously = vec![]; // we have not applied anything yet
+        let plan = diff_node_taints(&current, &desired_list, &previously);
+        assert!(
+            plan.to_add.is_empty(),
+            "must not add (admin already has the taint)"
+        );
+        assert!(
+            plan.to_update.is_empty(),
+            "must not overwrite admin's value"
+        );
+        assert!(plan.to_remove.is_empty());
+        assert_eq!(plan.conflicts, desired_list, "must surface as conflict");
+    }
+
+    #[test]
+    fn test_diff_node_taints_remove_when_previously_applied_and_still_on_node() {
+        let desired_list = vec![];
+        let current = vec![core_taint("workload", Some("batch"), "NoSchedule")];
+        let previously = vec![desired("workload", Some("batch"), TaintEffect::NoSchedule)];
+        let plan = diff_node_taints(&current, &desired_list, &previously);
+        assert_eq!(plan.to_remove, previously);
+        assert!(plan.to_add.is_empty());
+        assert!(plan.to_update.is_empty());
+        assert!(plan.unchanged.is_empty());
+        assert!(plan.conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_diff_node_taints_does_not_remove_admin_taint_not_previously_applied() {
+        // We applied nothing previously. Admin-added (workload, NoSchedule) is on
+        // current, but we never owned it — do NOT remove, do NOT conflict (we're
+        // not trying to claim it).
+        let desired_list = vec![];
+        let current = vec![core_taint("workload", Some("admin"), "NoSchedule")];
+        let previously = vec![];
+        let plan = diff_node_taints(&current, &desired_list, &previously);
+        assert!(
+            plan.to_remove.is_empty(),
+            "admin-added taint must be preserved"
+        );
+        assert!(plan.to_add.is_empty());
+        assert!(plan.to_update.is_empty());
+        assert!(plan.unchanged.is_empty());
+        assert!(plan.conflicts.is_empty());
+        assert!(plan.is_noop());
+    }
+
+    #[test]
+    fn test_diff_node_taints_does_not_remove_when_previously_owned_but_admin_re_added() {
+        // We applied it; admin then re-added with a different value. Removing would
+        // stomp admin's intent. Leave it alone, surface as conflict.
+        let desired_list = vec![];
+        let current = vec![core_taint("workload", Some("admin"), "NoSchedule")];
+        let previously = vec![desired("workload", Some("batch"), TaintEffect::NoSchedule)];
+        let plan = diff_node_taints(&current, &desired_list, &previously);
+        assert!(
+            plan.to_remove.is_empty(),
+            "value mismatch with admin means we do not own current — must not remove"
+        );
+        assert_eq!(plan.conflicts.len(), 1, "ownership conflict must surface");
+        assert_eq!(plan.conflicts[0].key, "workload");
+    }
+
+    #[test]
+    fn test_diff_node_taints_same_key_different_effect_treated_independently() {
+        let desired_list = vec![
+            desired("workload", Some("batch"), TaintEffect::NoSchedule),
+            desired("workload", Some("batch"), TaintEffect::NoExecute),
+        ];
+        let current = vec![core_taint("workload", Some("batch"), "NoSchedule")];
+        let previously = vec![desired("workload", Some("batch"), TaintEffect::NoSchedule)];
+        let plan = diff_node_taints(&current, &desired_list, &previously);
+        assert_eq!(
+            plan.unchanged,
+            vec![desired("workload", Some("batch"), TaintEffect::NoSchedule)]
+        );
+        assert_eq!(
+            plan.to_add,
+            vec![desired("workload", Some("batch"), TaintEffect::NoExecute)]
+        );
+    }
+
+    #[test]
+    fn test_diff_node_taints_mixed_plan() {
+        let desired_list = vec![
+            desired("workload", Some("batch"), TaintEffect::NoSchedule), // unchanged
+            desired("dedicated", Some("ml-new"), TaintEffect::NoExecute), // update
+            desired("priority", Some("high"), TaintEffect::PreferNoSchedule), // add
+        ];
+        let current = vec![
+            core_taint("workload", Some("batch"), "NoSchedule"),
+            core_taint("dedicated", Some("ml-old"), "NoExecute"),
+            core_taint("legacy", Some("gone"), "NoSchedule"), // will be removed
+        ];
+        let previously = vec![
+            desired("workload", Some("batch"), TaintEffect::NoSchedule),
+            desired("dedicated", Some("ml-old"), TaintEffect::NoExecute),
+            desired("legacy", Some("gone"), TaintEffect::NoSchedule),
+        ];
+        let plan = diff_node_taints(&current, &desired_list, &previously);
+        assert_eq!(plan.unchanged.len(), 1);
+        assert_eq!(plan.unchanged[0].key, "workload");
+        assert_eq!(plan.to_update.len(), 1);
+        assert_eq!(plan.to_update[0].key, "dedicated");
+        assert_eq!(plan.to_update[0].value.as_deref(), Some("ml-new"));
+        assert_eq!(plan.to_add.len(), 1);
+        assert_eq!(plan.to_add[0].key, "priority");
+        assert_eq!(plan.to_remove.len(), 1);
+        assert_eq!(plan.to_remove[0].key, "legacy");
+        assert!(plan.conflicts.is_empty());
+        assert!(!plan.is_noop());
+    }
+
+    #[test]
+    fn test_diff_node_taints_ignores_unknown_effect_on_current() {
+        // A taint on the Node with an effect string we don't recognise is
+        // treated as an admin taint and must not cause a panic.
+        let desired_list = vec![];
+        let current = vec![core_taint("odd", Some("v"), "NotAnEffectWeKnow")];
+        let plan = diff_node_taints(&current, &desired_list, &[]);
+        assert!(plan.is_noop());
+    }
+
+    // ========================================================================
+    // Phase 3 — apply_node_taints IO (mocked kube::Client)
+    // ========================================================================
+
+    fn node_response_body(name: &str, existing_taints: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": { "name": name, "resourceVersion": "1" },
+            "spec": { "taints": existing_taints },
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_apply_node_taints_noop_makes_no_http_call() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            // If apply_node_taints tries to make a call, this will observe it.
+            let maybe = h.next_request().await;
+            assert!(
+                maybe.is_none(),
+                "no-op plan must not make any HTTP request, got: {maybe:?}"
+            );
+        });
+        drop(srv);
+
+        let plan = NodeTaintPlan::default();
+        apply_node_taints(&client, "worker-1", &plan)
+            .await
+            .expect("no-op apply must return Ok");
+    }
+
+    #[tokio::test]
+    async fn test_apply_node_taints_add_patches_node_and_sets_annotation() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            // 1. GET Node (we read current taints before patching)
+            let (req, send) = h.next_request().await.expect("expected Node GET");
+            assert_eq!(req.method(), http::Method::GET);
+            assert!(
+                req.uri().path().ends_with("/api/v1/nodes/worker-1"),
+                "unexpected GET path: {}",
+                req.uri().path()
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(node_response_body(
+                        "worker-1",
+                        serde_json::json!([]),
+                    )))
+                    .unwrap(),
+            );
+
+            // 2. PATCH Node (merge or apply)
+            let (req, send) = h.next_request().await.expect("expected Node PATCH");
+            assert_eq!(req.method(), http::Method::PATCH);
+            assert!(
+                req.uri().path().ends_with("/api/v1/nodes/worker-1"),
+                "unexpected PATCH path: {}",
+                req.uri().path()
+            );
+            let body = http_body_util::BodyExt::collect(req.into_body())
+                .await
+                .unwrap()
+                .to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            // spec.taints present with workload=batch:NoSchedule
+            let taints = json.pointer("/spec/taints").expect("spec.taints in body");
+            assert_eq!(
+                taints[0]["key"], "workload",
+                "patch body must include the workload taint: {taints}"
+            );
+            assert_eq!(taints[0]["effect"], "NoSchedule");
+            // annotation written
+            let annotations = json
+                .pointer("/metadata/annotations")
+                .expect("annotations in body");
+            assert!(
+                annotations.get("5spot.finos.org/applied-taints").is_some(),
+                "ownership annotation must be set: {annotations}"
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(node_response_body(
+                        "worker-1",
+                        serde_json::json!([{"key":"workload","value":"batch","effect":"NoSchedule"}]),
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let plan = NodeTaintPlan {
+            to_add: vec![desired("workload", Some("batch"), TaintEffect::NoSchedule)],
+            ..Default::default()
+        };
+        apply_node_taints(&client, "worker-1", &plan)
+            .await
+            .expect("apply should succeed");
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_apply_node_taints_propagates_patch_error() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            // GET Node
+            let (_req, send) = h.next_request().await.expect("expected Node GET");
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(node_response_body(
+                        "worker-1",
+                        serde_json::json!([]),
+                    )))
+                    .unwrap(),
+            );
+            // PATCH fails 500
+            let (_req, send) = h.next_request().await.expect("expected Node PATCH");
+            send.send_response(
+                Response::builder()
+                    .status(500)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(500, "boom")))
+                    .unwrap(),
+            );
+        });
+
+        let plan = NodeTaintPlan {
+            to_add: vec![desired("workload", Some("batch"), TaintEffect::NoSchedule)],
+            ..Default::default()
+        };
+        let result = apply_node_taints(&client, "worker-1", &plan).await;
+        assert!(result.is_err(), "patch 500 must propagate, got: {result:?}");
+        srv.await.unwrap();
+    }
+
+    // ========================================================================
+    // Phase 4 — reconcile_node_taints orchestration
+    // ========================================================================
+
+    fn ready_node_body(name: &str, taints: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": { "name": name, "resourceVersion": "1" },
+            "spec": { "taints": taints },
+            "status": {
+                "conditions": [
+                    {"type": "Ready", "status": "True", "lastHeartbeatTime": "2026-04-19T00:00:00Z", "lastTransitionTime": "2026-04-19T00:00:00Z"}
+                ]
+            }
+        }))
+        .unwrap()
+    }
+
+    fn not_ready_node_body(name: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": { "name": name, "resourceVersion": "1" },
+            "spec": { "taints": [] },
+            "status": {
+                "conditions": [
+                    {"type": "Ready", "status": "False", "lastHeartbeatTime": "2026-04-19T00:00:00Z", "lastTransitionTime": "2026-04-19T00:00:00Z"}
+                ]
+            }
+        }))
+        .unwrap()
+    }
+
+    use crate::reconcilers::helpers::{NodeTaintReconcileOutcome, ReconcileNodeTaintsInput};
+
+    #[tokio::test]
+    async fn test_reconcile_node_taints_node_not_found_returns_no_node_yet() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected Node GET");
+            send.send_response(
+                Response::builder()
+                    .status(404)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(404, "not found")))
+                    .unwrap(),
+            );
+        });
+
+        let outcome = reconcile_node_taints(
+            &client,
+            ReconcileNodeTaintsInput {
+                node_name: "missing",
+                desired: &[],
+                previously_applied: &[],
+            },
+        )
+        .await
+        .expect("404 must surface as outcome, not error");
+        assert!(
+            matches!(outcome, NodeTaintReconcileOutcome::NoNodeYet),
+            "expected NoNodeYet, got: {outcome:?}"
+        );
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_node_taints_not_ready_returns_node_not_ready() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected Node GET");
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(not_ready_node_body("worker-1")))
+                    .unwrap(),
+            );
+        });
+
+        let desired_list = vec![desired("workload", Some("batch"), TaintEffect::NoSchedule)];
+        let outcome = reconcile_node_taints(
+            &client,
+            ReconcileNodeTaintsInput {
+                node_name: "worker-1",
+                desired: &desired_list,
+                previously_applied: &[],
+            },
+        )
+        .await
+        .expect("not-ready must surface as outcome, not error");
+        assert!(
+            matches!(outcome, NodeTaintReconcileOutcome::NodeNotReady),
+            "expected NodeNotReady, got: {outcome:?}"
+        );
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_node_taints_ready_and_noop_returns_applied() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected Node GET");
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(ready_node_body(
+                        "worker-1",
+                        serde_json::json!([{"key": "workload", "value": "batch", "effect": "NoSchedule"}]),
+                    )))
+                    .unwrap(),
+            );
+            // No PATCH expected (noop).
+        });
+
+        let desired_list = vec![desired("workload", Some("batch"), TaintEffect::NoSchedule)];
+        let previously_list = desired_list.clone();
+        let outcome = reconcile_node_taints(
+            &client,
+            ReconcileNodeTaintsInput {
+                node_name: "worker-1",
+                desired: &desired_list,
+                previously_applied: &previously_list,
+            },
+        )
+        .await
+        .expect("noop must succeed");
+        match outcome {
+            NodeTaintReconcileOutcome::Applied { applied } => {
+                assert_eq!(applied.len(), 1);
+                assert_eq!(applied[0].key, "workload");
+            }
+            other => panic!("expected Applied, got: {other:?}"),
+        }
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_node_taints_ready_and_needs_add_patches_and_returns_applied() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            // 1. GET node (from reconcile_node_taints — check Ready)
+            let (_req, send) = h.next_request().await.expect("expected Node GET #1");
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(ready_node_body(
+                        "worker-1",
+                        serde_json::json!([]),
+                    )))
+                    .unwrap(),
+            );
+            // 2. GET node (from apply_node_taints — read current spec)
+            let (_req, send) = h.next_request().await.expect("expected Node GET #2");
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(ready_node_body(
+                        "worker-1",
+                        serde_json::json!([]),
+                    )))
+                    .unwrap(),
+            );
+            // 3. PATCH node
+            let (req, send) = h.next_request().await.expect("expected Node PATCH");
+            assert_eq!(req.method(), http::Method::PATCH);
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(ready_node_body(
+                        "worker-1",
+                        serde_json::json!([{"key": "workload", "value": "batch", "effect": "NoSchedule"}]),
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let desired_list = vec![desired("workload", Some("batch"), TaintEffect::NoSchedule)];
+        let outcome = reconcile_node_taints(
+            &client,
+            ReconcileNodeTaintsInput {
+                node_name: "worker-1",
+                desired: &desired_list,
+                previously_applied: &[],
+            },
+        )
+        .await
+        .expect("apply should succeed");
+        match outcome {
+            NodeTaintReconcileOutcome::Applied { applied } => {
+                assert_eq!(applied.len(), 1);
+                assert_eq!(applied[0].key, "workload");
+            }
+            other => panic!("expected Applied, got: {other:?}"),
+        }
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_node_taints_conflict_returns_conflict_variant() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected Node GET");
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(ready_node_body(
+                        "worker-1",
+                        serde_json::json!([{"key": "workload", "value": "admin", "effect": "NoSchedule"}]),
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let desired_list = vec![desired("workload", Some("ours"), TaintEffect::NoSchedule)];
+        let outcome = reconcile_node_taints(
+            &client,
+            ReconcileNodeTaintsInput {
+                node_name: "worker-1",
+                desired: &desired_list,
+                previously_applied: &[],
+            },
+        )
+        .await
+        .expect("conflict must surface as outcome, not error");
+        match outcome {
+            NodeTaintReconcileOutcome::Conflict { conflicts } => {
+                assert_eq!(conflicts.len(), 1);
+                assert_eq!(conflicts[0].key, "workload");
+            }
+            other => panic!("expected Conflict, got: {other:?}"),
+        }
+        srv.await.unwrap();
     }
 }

@@ -26,6 +26,149 @@ The format is based on the regulated environment requirements:
 ### Why
 The user just committed the ADD (Architecture Driven Development) rule: any architectural change must land in CALM before code. An audit against the two most-recent features found the **emergency-reclaim work is architecturally material** (new node-side component, new trust boundary, new cross-cluster signalling protocol, new `EmergencyRemove` phase, new RBAC scope in `5spot-system`) but was not reflected in CALM. This commit closes that gap — it is the shakedown test for the ADD rule, done now so the workflow is proven before the rule applies to future features. The separately-audited node-taints feature is not architectural under ADD (CRD-field + existing Node-watch pattern only) and is intentionally **not** retrofitted here.
 
+## [2026-04-21 17:00] - Integration test for node-taint reconcile on a real cluster (Phase 8)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `tests/integration_node_taints.rs`: New integration test file. Two `#[tokio::test] #[ignore]` cases exercise `five_spot::reconcilers::reconcile_node_taints` against a real kube cluster (kind). Case 1 (`apply_update_shrink_cycle`) applies two taints, shrinks to one, asserts only the removed one is gone and the kept one survives. Case 2 (`admin_conflict_is_reported_and_admin_taint_preserved`) seeds an admin-owned taint with the same `(key, effect)` as a desired one, then asserts the reconcile returns `Conflict` and leaves the admin-owned taint untouched. Skips gracefully (not fails) when no cluster is reachable, so `cargo test` stays hermetic. All test-applied taints use the `integration-test.5spot.local/` key prefix so the cleanup helper can scrub on both entry and exit without ever touching admin state. Deliberately bypasses CAPI/k0smotron entirely — we pick an already-Ready Node from the cluster rather than provisioning one, because the only piece this test needs to exercise is the Node-side patch/annotate path.
+- `src/reconcilers/mod.rs`: Re-exported `reconcile_node_taints`, `ReconcileNodeTaintsInput`, `NodeTaintReconcileOutcome` from the `helpers` submodule at the `reconcilers` level so integration tests (which can only see the public API) can call them.
+
+### Why
+Phase 8 of the user-defined Node taints roadmap — real-cluster verification. The unit tests in `helpers_tests.rs` already cover the pure logic in `diff_node_taints` and drive `reconcile_node_taints` through a mocked kube service; the integration test proves the same function works end-to-end against a real API server, including server-side apply semantics, annotation round-tripping, and admin-conflict detection against live `spec.taints`. Per the user's decision earlier in this session, we deliberately mock the `status.nodeRef` side (by picking an existing Node) rather than stand up CAPI + k0smotron + RemoteMachine + SSH-reachable hardware — that's out of scope for this roadmap and the Node-patch code path is the only new behavior.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+New tests are gated behind `#[ignore]`; running `cargo test` without a cluster still shows 328/328 lib tests plus `0 passed; 2 ignored` on the integration target. Developers who want to exercise Phase 8 run `cargo test --test integration_node_taints -- --ignored --test-threads=1` against a kind cluster (single-threaded because both cases mutate the same Node). `cargo fmt` ✓ · `cargo clippy --all-targets --all-features -- -D warnings` ✓ · `cargo test` 328/328 ✓.
+
+---
+
+## [2026-04-21 16:00] - Docs + examples + crddoc regen for nodeTaints (Phase 7)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/concepts/scheduled-machine.md`: Added a `nodeTaints` row to the spec-fields table, a new "Node Taints" subsection (shape, ownership model, `NodeTainted` condition vocabulary, what-it-does-not-manage), and an `appliedNodeTaints` row in the status-fields table. Links from both directions so operators reading the status field land on the ownership explainer.
+- `docs/src/operations/troubleshooting.md`: Added a new "Node Taints" section with "Taints not appearing on Node" walkthrough, one subsection per `NodeTainted` condition reason (`NoNodeYet`, `NodeNotReady`, `TaintOwnershipConflict`, `PatchFailed`) with the exact `kubectl` commands operators need and the fix for each.
+- `README.md`: Added a one-line bullet in the features list referencing `spec.nodeTaints` and the ownership/drift-reconcile story.
+- `src/bin/crddoc.rs`: Added `nodeTaints` to the example YAML in the generated API doc, a `#### nodeTaints` section with the full NodeTaint field schema + reserved-prefix + uniqueness rules, and a `#### appliedNodeTaints` section in Status Fields explaining the ownership-record-of-truth role.
+- `docs/src/reference/api.md`: Regenerated via `cargo run --bin crddoc` (LAST step per CLAUDE.md order-of-operations) — now 231 lines, with spec and status taint fields documented.
+
+### Why
+Phase 7 of the user-defined Node taints roadmap — docs last. Operators need to find the condition vocabulary *before* they hit a production issue, and the troubleshooting entry is keyed off the condition reason so a `kubectl get scheduledmachine ... -o jsonpath='{.status.conditions[?(@.type=="NodeTainted")]}'` walk leads directly to the fix. The crddoc regen runs last per the CLAUDE.md mandate because it incorporates everything upstream.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+`cargo fmt` ✓ · `cargo clippy --all-targets --all-features -- -D warnings` ✓ · `cargo test --lib` 328/328 ✓ · `cargo run --bin crddoc` ✓ (regenerated `docs/src/reference/api.md`).
+
+---
+
+## [2026-04-21 15:30] - ValidatingAdmissionPolicy CEL rules for nodeTaints (Phase 6)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/admission/validatingadmissionpolicy.yaml`: Added six validation rules (14–19) covering `spec.nodeTaints`: RFC-1123 qualified-name regex on `key`, 253-char cap on `key`, 63-char cap on `value`, reserved `5spot.finos.org/` prefix rejection, reserved kubelet prefixes (`kubernetes.io/`, `node.kubernetes.io/`, `node-role.kubernetes.io/`) rejection, and uniqueness of `(key, effect)` pairs via O(n²) `filter().size() == 1` scan. Each rule guards `!has(object.spec.nodeTaints)` so empty/absent fields pass trivially.
+- `examples/scheduledmachine-bad-taint.yaml`: New worked-negative example — four taints, each one tripping a different rule (reserved 5spot prefix, reserved kubelet prefix, duplicate key+effect). Lets operators verify the VAP is actually installed by running `kubectl apply -f` and watching the rejection fire.
+
+### Why
+Phase 6 of the user-defined Node taints roadmap — defense in depth. The Rust-side validator in `src/crd.rs` is the authoritative guard (it runs in every cluster regardless of whether the VAP is installed); the VAP is the faster-feedback layer that rejects bad input at API-server admission before the reconciler queues a hopeless work item. Both layers intentionally cover the same rules so a cluster without the VAP still has correct semantics, and a cluster with the VAP gets the sharper error message earlier.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (VAP is re-applied via `kubectl apply -f deploy/admission/validatingadmissionpolicy.yaml`; existing CRs are untouched because the new rules only fire on CREATE/UPDATE)
+- [ ] Documentation only
+
+No Rust changes. YAML parse verified via `python3 -c "import yaml; yaml.safe_load_all(...)"` — 19 validations, 1 doc. End-to-end test (kubectl reject) requires a cluster and is covered by Phase 8.
+
+---
+
+## [2026-04-21 15:00] - Termination guards on node-taint reconcile (Phase 5)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/scheduled_machine.rs`: Added two defensive guards at the top of `reconcile_node_taints_best_effort` — one short-circuits on `metadata.deletion_timestamp.is_some()` (the Node is about to be drained and deleted; applying taints mid-delete leaves a confusing post-mortem state), the other on `spec.kill_switch` (kill-switch routes to `handle_kill_switch`, and taints are not a supported shortcut for eviction — drain is the sanctioned path). Both guards log at debug and return without touching the apiserver.
+- `src/reconcilers/scheduled_machine_tests.rs`: Added 5 tests using `tower_test::mock::Handle` with a `next_request()` vs 50ms-sleep race — the watcher task panics if any HTTP request arrives. Covers deletion_timestamp, kill_switch, absent nodeRef, empty nodeRef name, and empty desired+applied. The "no HTTP call" watcher pattern mirrors `test_patch_machine_refs_status_both_none_is_noop_no_http_call`.
+
+### Why
+Phase 5 of the user-defined Node taints roadmap. The natural reconcile flow already short-circuits on deletion (deletion_timestamp check at the top of `reconcile` routes to `handle_deletion`) and on kill_switch (routes to `handle_kill_switch` before the Active phase handler). These guards are defense-in-depth: they pin the contract at the function boundary so a future caller that invokes `reconcile_node_taints_best_effort` from a new phase handler cannot accidentally apply taints mid-termination. The tests prove the guards block the apiserver call, not just the return value.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (no runtime behaviour change for the Active path; termination paths now have explicit guards instead of relying on dispatch-level short-circuits)
+- [ ] Documentation only
+
+`cargo fmt` ✓ · `cargo clippy --all-targets --all-features -- -D warnings` ✓ · `cargo test --lib` 328/328 ✓.
+
+---
+
+## [2026-04-21 14:30] - Wire node-taint reconcile into `Active` phase (Phase 4)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/scheduled_machine.rs`: Added `reconcile_node_taints_best_effort` and call it from `handle_active_phase` right after `provision_reclaim_agent_best_effort` (so both side-effects key off the same resolved `nodeRef`). Persists the new applied list via `patch_applied_node_taints_status` only when it differs from `status.applied_node_taints`. `NoNodeYet` / `NodeNotReady` log at debug; `Conflict` logs at warn; all failures are logged-and-returned so taint reconcile cannot block machine scheduling. Early-returns on empty `nodeRef`, empty desired ∧ empty previously-applied, and missing namespace.
+- `src/reconcilers/helpers.rs`: Added `ReconcileNodeTaintsInput<'a>` struct, `NodeTaintReconcileOutcome { NoNodeYet | NodeNotReady | Applied { applied } | Conflict { conflicts } }`, `reconcile_node_taints` (GET node → check Ready → diff → apply) and `patch_applied_node_taints_status` (merge-patch wrapper mirroring `patch_machine_refs_status`).
+- `src/reconcilers/helpers_tests.rs`: Added 5 tests using `tower_test::mock::pair` — 404 → `NoNodeYet`, Ready=False → `NodeNotReady`, Ready + no-op → `Applied` with zero PATCHes, Ready + add → two GETs + one PATCH + `Applied`, admin collision → `Conflict`.
+
+### Why
+Phase 4 of the user-defined Node taints roadmap. With Phase 3's pure `diff_node_taints` + `apply_node_taints` in place, this phase plumbs them into the actual reconcile loop behind the `Active` phase's existing `nodeRef` resolution. Best-effort semantics match `provision_reclaim_agent_best_effort`: taint drift is a workload-scheduling concern, not an availability concern, and must never wedge the reconcile.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (new controller behaviour triggers only when a CR declares `spec.nodeTaints`; CRs without the field see no change)
+- [ ] Documentation only
+
+`cargo fmt` ✓ · `cargo clippy --all-targets --all-features -- -D warnings` ✓ · `cargo test --lib` 323/323 ✓.
+
+---
+
+## [2026-04-21 14:00] - Node-taint diff helper + SSA apply IO (Phase 3)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs`: Added `NodeTaintPlan { to_add, to_update, to_remove, unchanged, conflicts }` with `is_noop()`, pure `diff_node_taints(current, desired, previously_applied)` that identifies taints by `(key, effect)`, treats `value` as mutable, and routes admin-owned collisions into `conflicts` instead of overwriting, and `apply_node_taints(client, node_name, plan)` which GETs the Node, rebuilds `spec.taints` (controller-owned minus `to_remove`, plus admin-owned, plus `to_add`/`to_update`), and SSA-patches under field manager `5spot-controller-node-taints` with the `5spot.finos.org/applied-taints` ownership annotation.
+- `src/reconcilers/helpers_tests.rs`: Added 14 tests — 11 pure-diff cases (empty/no-op/add/update-value/remove-previously-applied/keep-admin/admin-collision-on-add/admin-collision-on-remove-value-drift/duplicate-desired-key-across-effects/full-cycle/remove-many) plus 3 IO cases via `tower_test::mock::pair` covering no-op (no PATCH), add (GET + PATCH with correct field manager + annotation payload), and 404-on-GET (error bubbles, no PATCH).
+
+### Why
+Phase 3 of the user-defined Node taints roadmap. The diff logic is isolated from IO so that the ownership model — identity on `(key, effect)`, value mutable, no cross-tenant overwrites — is verified exhaustively in pure tests before it meets a real kube client. The apply side uses SSA + annotation so a later `kubectl get node -o json` can trace every controller-owned taint back to the CR.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (new helpers are dead code until Phase 4 wires them into `handle_active_phase`; no runtime behaviour change yet)
+- [ ] Documentation only
+
+`cargo fmt` ✓ · `cargo test --lib` 318/318 ✓. (Clippy deferred to Phase 4 — the new `pub fn`s are unused until wired, which trips `-D warnings` `dead_code`; Phase 4 wiring resolves it.)
+
+---
+
+## [2026-04-19 22:30] - Node-taint status surface + `NodeTainted` condition (Phase 2)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: Added `applied_node_taints: Vec<NodeTaint>` to `ScheduledMachineStatus` (defaults to empty, omitted from JSON when empty). This is the controller's record of truth for ownership — only entries it listed here are eligible for removal; admin-added taints colliding on `(key, effect)` surface as a condition instead of being overwritten.
+- `src/constants.rs`: Added `CONDITION_TYPE_NODE_TAINTED = "NodeTainted"` and five condition reasons covering every state machine transition for the `NodeTainted` condition: `REASON_NODE_TAINTS_APPLIED` ("Applied"), `REASON_NODE_NOT_READY` ("NodeNotReady"), `REASON_NODE_TAINT_PATCH_FAILED` ("PatchFailed"), `REASON_NO_NODE_YET` ("NoNodeYet"), and `REASON_TAINT_OWNERSHIP_CONFLICT` ("TaintOwnershipConflict").
+- `src/crd_tests.rs`: Added five new tests — empty-default behaviour, serialisation-omit-when-empty, round-trip with two taints, deserialise-from-absent, and a hard-coded enforcement of all six condition constant string values so a future rename cannot silently ship.
+- `deploy/crds/scheduledmachine.yaml`: Regenerated via `cargo run --bin crdgen` — now publishes the `appliedNodeTaints` status array.
+
+### Why
+Phase 2 of the user-defined Node taints roadmap. Separating the status type + condition vocabulary from the reconciler IO (Phase 3) means the diff helper and the apply IO can be built against a stable status contract. The condition reasons are constants (not strings inline in the reconciler) so that the dashboard / alerting layer has a fixed vocabulary to match on.
+
 ### Impact
 - [ ] Breaking change
 - [ ] Requires cluster rollout
@@ -36,6 +179,79 @@ The user just committed the ADD (Architecture Driven Development) rule: any arch
 - `make calm-validate` → 0 errors, 0 warnings, 0 info/hints.
 - `make calm-diagrams` → regenerates `docs/src/architecture/flows.md` (now 3 flows: activation, deactivation, emergency-reclaim) and `docs/src/architecture/system.md` (14 nodes including the new 4, workload-cluster subgraph now contains API server + reclaim agent).
 - `make docs` → `mkdocs build` passes; every hand-authored mermaid component in `docs/src/concepts/emergency-reclaim.md` has a corresponding CALM node.
+- [x] Config change only (CRD re-apply picks up the `appliedNodeTaints` status schema; existing CRs are unaffected because the field defaults to empty)
+- [ ] Documentation only
+
+`cargo fmt` ✓ · `cargo clippy --all-targets --all-features -- -D warnings` ✓ · `cargo test --lib` 304/304 ✓.
+
+---
+
+## [2026-04-19 22:00] - Add `spec.nodeTaints` CRD schema + validator (Phase 1)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: Added `NodeTaint { key, value?, effect }` struct and `TaintEffect { NoSchedule | PreferNoSchedule | NoExecute }` enum. Added `node_taints: Vec<NodeTaint>` to `ScheduledMachineSpec` (defaults to empty, omitted from serialisation when empty). Added `validate_node_taints()` plus private `validate_taint_key` / `validate_taint_value` / `is_qualified_name` / `is_dns_subdomain` helpers, with reserved-prefix checks for `5spot.finos.org/`, `kubernetes.io/`, `node.kubernetes.io/`, and `node-role.kubernetes.io/`.
+- `src/crd_tests.rs`: Added 24 new tests covering serde round-trip (with/without `value`), `TaintEffect` variants, invalid-variant rejection, hash/eq identity, empty-list default, spec omission when empty, and every rejection path of `validate_node_taints` (empty key, leading/trailing hyphen, invalid char, 64-char key, 64-char value, duplicate `(key, effect)`, and each reserved prefix).
+- `src/reconcilers/helpers_tests.rs`, `src/reconcilers/scheduled_machine_tests.rs`: Added `node_taints: vec![]` to existing `ScheduledMachineSpec` constructors so they compile against the new field.
+- `deploy/crds/scheduledmachine.yaml`: Regenerated via `cargo run --bin crdgen`; now includes the `nodeTaints` array schema with `key`/`value`/`effect` properties and the enum restriction on `effect`.
+- `docs/src/reference/api.md`: Regenerated via `cargo run --bin crddoc` (picked up pre-existing `killIfCommands` doc drift in the static generator; `nodeTaints` prose is deferred to Phase 7 per the roadmap's docs-last policy).
+- `examples/scheduledmachine-tainted.yaml`: New worked example showing two taints (`workload=batch:NoSchedule`, `dedicated=ml:NoExecute`).
+
+### Why
+Phase 1 of the user-defined Node taints roadmap (`~/dev/roadmaps/5spot-user-defined-node-taints.md`). This lands the schema + CR-level validator in isolation so the reconciler work in Phases 2–4 has a stable type to build against. Validation runs at the reconciler boundary for clusters without a ValidatingAdmissionPolicy; the VAP (Phase 6) is the defense-in-depth layer.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CRD re-apply to pick up new `nodeTaints` schema — absent = empty, so existing CRs are unaffected)
+- [ ] Documentation only
+
+`cargo fmt` ✓ · `cargo clippy --all-targets --all-features -- -D warnings` ✓ · `cargo test --lib` 299/299 ✓.
+
+---
+
+## [2026-04-21 13:00] - Defer Phase-2-rung-2 netlink proc connector to GitHub issue
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `/Users/erick/dev/roadmaps/5spot-emergency-reclaim-by-process-match.md`: Updated the Phase-2 rung-2 (netlink proc connector) status row from "⏳ Not started" to "⏳ Deferred — tracked as [finos/5-spot#40](https://github.com/finos/5-spot/issues/40)". Row body rewritten to name the concrete tradeoff (detection latency ~1s → <10ms; lower idle CPU; deterministic worst case) and note the counter-tradeoff (rung 1 is cheaper under heavy-exec workloads) so future readers don't re-re-evaluate from scratch.
+- Opened [finos/5-spot#40](https://github.com/finos/5-spot/issues/40) (label: `enhancement`) carrying the full scope, dependency-choice tradeoff (`nix` vs `neli` vs `netlink-proto`), deployment delta (`CAP_NET_ADMIN` add + suppression-rationale updates), out-of-scope markers (eBPF, cross-node), and acceptance criteria.
+
+### Why
+Rung 2 is optimization, not correctness — rung 1 already meets the <5s SLA and integration/stopwatch testing will be the actual critical-path work. Keeping it in the roadmap as "⏳ Not started" was misleading because the decision is already made (defer), not open. Moving the live tracking to a GitHub issue gets it in front of contributors who may want to pick it up, and keeps the roadmap narrative truthful about what's "active work" vs "filed follow-up".
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+No code or manifest changes. `cargo-quality` not re-run (no Rust touched).
+
+---
+
+## [2026-04-21 12:30] - Phase-2.5 async-orchestrator mock-API tests + roadmap alignment
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers_tests.rs`: 4 new async-orchestrator tests for `reconcile_reclaim_agent_provision` using the existing `tower_test::mock` harness. Non-empty commands → Node label merge-patch then ConfigMap server-side apply (asserting `fieldManager=5spot-controller-reclaim-agent` + `force=true` query params, the `enabled` label string in the patch body, and the `data.reclaim.toml` key present in the apply body). Empty commands → Node label patch (JSON-null value) then ConfigMap DELETE. 404-on-delete → benign `Ok(())` so a re-run after partial tear-down completes. Label-PATCH 500 → `ReconcilerError::KubeError` propagation with no second request issued. Also fixed one stale test comment in `test_build_reclaim_agent_configmap_data_key_is_reclaim_toml` that still referenced the old `/etc/5spot/reclaim.toml` mount path — rewrote to describe the watch-based contract.
+- `/Users/erick/dev/roadmaps/5spot-emergency-reclaim-by-process-match.md`: Flipped Phase-2.5 status row from 🟡 Partial to ✅ Shipped (agent-side watch consumption + new mock-API tests close the loop; the DaemonSet ConfigMap mount is gone entirely, so the "residual" that was the blocker no longer exists). Flipped Phase-4 status row from 🟡 Partial to ✅ Shipped for unit scope. Updated test count to **275 green** (was 271). Promoted the three runtime-dependent Phase-4 items (kind integration, manual stopwatch, re-enable loop protection) to explicit `TODO-*` follow-ups with their own names so they stop reading as "open Phase 4 unit gaps". Header status line and cumulative-commits reference updated to include the 2026-04-21 increments.
+
+### Why
+Two intents bundled: (1) close the last tractable Phase-4 unit-test gap that was pure-Rust and macOS-viable — the async orchestrator paths of `reconcile_reclaim_agent_provision` had pure-helper tests but no request-sequence pinning, which meant a refactor could reverse the label-PATCH → ConfigMap-apply order (or drop force=true, or rename the field manager) without any red test. (2) Align the roadmap narrative with what's actually shipped: with the agent now watching the per-node ConfigMap via kube API and the DaemonSet mount removed, the Phase-2.5 "residual blocker" narrative is genuinely resolved — leaving it as 🟡 Partial would mislead the next reader.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Test count:** 275 green (was 271). `cargo clippy --all-targets --all-features -- -D warnings` clean.
+
+**Still open (runtime-dependent, explicit follow-ups):** Phase 2 rung-2 netlink proc connector (Linux-only, multi-session), kind-cluster integration test, real-hardware stopwatch verification. These are not Phase 4 unit-test gaps — they need infrastructure that isn't appropriate to stub.
 
 ---
 

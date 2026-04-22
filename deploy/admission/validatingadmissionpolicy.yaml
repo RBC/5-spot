@@ -148,3 +148,82 @@ spec:
     - expression: "object.spec.infrastructureSpec.kind.size() > 0"
       message: "spec.infrastructureSpec.kind must not be empty"
       reason: Invalid
+
+    # ── 14. nodeTaints: key format (RFC-1123 qualified name) ──────────────────
+    # Mirrors validate_taint_key() in src/crd.rs. The optional "<prefix>/" part
+    # is a DNS subdomain; the name part is a qualified name. Both capped at 63
+    # chars post-split. Core/v1 admission applies the same regex — we duplicate
+    # it here so bad input never reaches the reconciler.
+    # Trivially true when nodeTaints is absent or empty.
+    - expression: |
+        !has(object.spec.nodeTaints) ||
+        object.spec.nodeTaints.all(t,
+          t.key.matches('^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$'))
+      message: >-
+        spec.nodeTaints[*].key must be an RFC-1123 qualified name
+        (optional DNS-1123 prefix '/' followed by a label of letters/digits/'-','_','.')
+      reason: Invalid
+
+    # ── 15. nodeTaints: key length ≤ 253 total, name-part ≤ 63 ────────────────
+    # Qualified-name rule: the name after the optional '/' is ≤ 63 chars.
+    # We check total length ≤ 253 which also bounds the name part since the
+    # prefix is ≤ 253 per DNS-1123. A tighter per-part cap would require CEL
+    # string splits that are verbose; the Rust-side validator does enforce
+    # the 63-char name-part cap as the authoritative guard.
+    - expression: |
+        !has(object.spec.nodeTaints) ||
+        object.spec.nodeTaints.all(t, t.key.size() <= 253)
+      message: "spec.nodeTaints[*].key must be ≤ 253 characters"
+      reason: Invalid
+
+    # ── 16. nodeTaints: value length ≤ 63 ─────────────────────────────────────
+    # Mirrors validate_taint_value() in src/crd.rs. Core/v1 enforces the same
+    # 63-char cap on taint values.
+    - expression: |
+        !has(object.spec.nodeTaints) ||
+        object.spec.nodeTaints.all(t, !has(t.value) || t.value.size() <= 63)
+      message: "spec.nodeTaints[*].value must be ≤ 63 characters"
+      reason: Invalid
+
+    # ── 17. nodeTaints: reserved 5spot.finos.org/ prefix ──────────────────────
+    # Our own controller owns this namespace for internal taints / annotations.
+    # Users must not set taints here via the CR; request routing for reserved
+    # keys is handled server-side.
+    - expression: |
+        !has(object.spec.nodeTaints) ||
+        object.spec.nodeTaints.all(t, !t.key.startsWith('5spot.finos.org/'))
+      message: >-
+        spec.nodeTaints[*].key must not start with '5spot.finos.org/' —
+        this prefix is reserved for 5Spot controller-owned taints
+      reason: Invalid
+
+    # ── 18. nodeTaints: reserved kubernetes.io / node.kubernetes.io /
+    # node-role.kubernetes.io prefixes ────────────────────────────────────────
+    # These prefixes carry special kubelet/scheduler semantics and must not
+    # be set via spec.nodeTaints — operators wanting control-plane role
+    # taints should use spec.machineTemplate instead.
+    - expression: |
+        !has(object.spec.nodeTaints) ||
+        object.spec.nodeTaints.all(t,
+          !t.key.startsWith('kubernetes.io/') &&
+          !t.key.startsWith('node.kubernetes.io/') &&
+          !t.key.startsWith('node-role.kubernetes.io/'))
+      message: >-
+        spec.nodeTaints[*].key must not start with 'kubernetes.io/',
+        'node.kubernetes.io/', or 'node-role.kubernetes.io/' —
+        use spec.machineTemplate for control-plane role taints
+      reason: Invalid
+
+    # ── 19. nodeTaints: no duplicate (key, effect) pairs ──────────────────────
+    # Mirrors the duplicate-check arm of validate_node_taints() in src/crd.rs.
+    # Identity is the tuple (key, effect); value is mutable. We check that
+    # every entry appears exactly once under (key, effect). O(n²) scan —
+    # acceptable because nodeTaints is typically ≤ 5 entries per CR.
+    - expression: |
+        !has(object.spec.nodeTaints) ||
+        object.spec.nodeTaints.all(t,
+          object.spec.nodeTaints.filter(x, x.key == t.key && x.effect == t.effect).size() == 1)
+      message: >-
+        spec.nodeTaints must not contain duplicate (key, effect) pairs —
+        taint identity is the tuple (key, effect); value is mutable
+      reason: Invalid

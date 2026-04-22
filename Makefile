@@ -13,7 +13,7 @@ CALM_DIAGRAMS_OUT := docs/src/architecture
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= 5spot
 IMAGE_TAG ?= latest-dev
-NAMESPACE ?= 5-spot-system
+NAMESPACE ?= 5spot-system
 
 # Platform configuration for builds
 # Default is linux/amd64 (most common for Kubernetes deployments)

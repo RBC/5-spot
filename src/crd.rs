@@ -77,6 +77,17 @@ pub struct ScheduledMachineSpec {
     #[serde(default)]
     pub kill_switch: bool,
 
+    /// User-defined taints applied to the Kubernetes Node once it is Ready.
+    ///
+    /// The controller owns and reconciles only the taints it applied (tracked
+    /// in `status.appliedNodeTaints` plus the `5spot.finos.org/applied-taints`
+    /// annotation on the Node). Admin-added taints on the same Node are left
+    /// untouched. A taint is identified by the tuple `(key, effect)`; `value`
+    /// is mutable. Keys prefixed with `5spot.finos.org/`, `kubernetes.io/`,
+    /// `node.kubernetes.io/`, or `node-role.kubernetes.io/` are rejected.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_taints: Vec<NodeTaint>,
+
     /// Optional list of process patterns that trigger an emergency node
     /// reclaim. When non-empty, the 5-Spot controller installs the
     /// `5spot-reclaim-agent` `DaemonSet` on every Node backing this
@@ -267,6 +278,41 @@ pub struct MachineTemplateSpec {
 }
 
 // ============================================================================
+// NodeTaint / TaintEffect - User-declared taints on the provisioned Node
+// ============================================================================
+
+/// A taint the controller applies to the Kubernetes Node once it is Ready.
+///
+/// Mirrors the shape of core/v1 `Taint`. Identity is the tuple `(key, effect)`;
+/// `value` is mutable. See `ScheduledMachineSpec.node_taints` for ownership
+/// semantics.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeTaint {
+    /// Taint key. Must be a qualified name (`[prefix/]name`), 1–63 chars on the
+    /// name portion and matching `[a-z0-9A-Z]([-a-zA-Z0-9.]*[a-zA-Z0-9])?`.
+    /// Reserved prefixes (`5spot.finos.org/`, `kubernetes.io/`,
+    /// `node.kubernetes.io/`, `node-role.kubernetes.io/`) are rejected.
+    pub key: String,
+
+    /// Optional taint value (max 63 chars). Matches the same qualified-name
+    /// pattern as `key`'s name portion when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+
+    /// Taint effect — one of `NoSchedule`, `PreferNoSchedule`, `NoExecute`.
+    pub effect: TaintEffect,
+}
+
+/// Taint effect — matches the three values defined by core/v1.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+pub enum TaintEffect {
+    NoSchedule,
+    PreferNoSchedule,
+    NoExecute,
+}
+
+// ============================================================================
 // ObjectReference / NodeRef - References to Kubernetes objects
 // ============================================================================
 
@@ -376,6 +422,14 @@ pub struct ScheduledMachineStatus {
     /// Time when machine will be cleaned up (RFC3339 format)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cleanup: Option<String>,
+
+    /// Taints the controller has applied to the Node, in the order they were
+    /// applied. Maintained as the controller's record of truth so subsequent
+    /// reconciles only mutate taints we own — admin-added taints on the same
+    /// Node whose `(key, effect)` collides with an entry here are surfaced as
+    /// a `TaintOwnershipConflict` condition rather than overwritten.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applied_node_taints: Vec<NodeTaint>,
 }
 
 // ============================================================================
@@ -554,6 +608,158 @@ pub fn parse_hour_ranges(hour_specs: &[String]) -> Result<HashSet<u8>, String> {
     }
 
     Ok(result)
+}
+
+// ============================================================================
+// NodeTaint validation
+// ============================================================================
+
+/// Maximum length of the name portion of a taint key, and of a taint value.
+const TAINT_NAME_MAX_LEN: usize = 63;
+
+/// Maximum length of the optional prefix portion of a taint key (DNS subdomain).
+const TAINT_PREFIX_MAX_LEN: usize = 253;
+
+/// Our own reserved taint-key prefix — operators may not apply taints under it.
+const RESERVED_TAINT_PREFIX_OWN: &str = "5spot.finos.org/";
+
+/// Kubernetes-reserved taint-key prefixes. Rejected at the CR boundary so that
+/// control-plane / kubelet signalling is never spoofed via `spec.nodeTaints`.
+const RESERVED_K8S_TAINT_PREFIXES: &[&str] = &[
+    "node.kubernetes.io/",
+    "node-role.kubernetes.io/",
+    "kubernetes.io/",
+];
+
+/// Validate a list of user-declared `NodeTaint` entries.
+///
+/// Rules:
+/// - Each key is a qualified name (`[prefix/]name`) where the name portion
+///   matches `[a-z0-9A-Z]([-a-zA-Z0-9.]*[a-zA-Z0-9])?` and is 1..=63 chars.
+/// - If present, the value obeys the same pattern and is <=63 chars.
+/// - `(key, effect)` pairs are unique; same key with different effects is OK.
+/// - Reserved prefixes are rejected with a pointed error message.
+///
+/// # Errors
+/// Returns a human-readable string describing the first offending taint — the
+/// reconciler bubbles this up as a condition on the CR.
+pub fn validate_node_taints(taints: &[NodeTaint]) -> Result<(), String> {
+    let mut seen: HashSet<(String, TaintEffect)> = HashSet::new();
+    for t in taints {
+        validate_taint_key(&t.key)?;
+        if let Some(v) = &t.value {
+            validate_taint_value(v)?;
+        }
+        if !seen.insert((t.key.clone(), t.effect.clone())) {
+            return Err(format!(
+                "duplicate (key, effect) in spec.nodeTaints: ({}, {:?})",
+                t.key, t.effect
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_taint_key(key: &str) -> Result<(), String> {
+    if key.is_empty() {
+        return Err("taint key must be non-empty".to_string());
+    }
+    if key.starts_with(RESERVED_TAINT_PREFIX_OWN) {
+        return Err(format!(
+            "taint key must not use reserved prefix {RESERVED_TAINT_PREFIX_OWN}: {key}"
+        ));
+    }
+    for prefix in RESERVED_K8S_TAINT_PREFIXES {
+        if key.starts_with(prefix) {
+            return Err(format!(
+                "taint key prefix {prefix} is reserved by Kubernetes; use spec.machineTemplate for control-plane role signalling, got: {key}"
+            ));
+        }
+    }
+    let (prefix_opt, name) = match key.split_once('/') {
+        Some((p, n)) => (Some(p), n),
+        None => (None, key),
+    };
+    if let Some(prefix) = prefix_opt {
+        if prefix.is_empty() || prefix.len() > TAINT_PREFIX_MAX_LEN {
+            return Err(format!(
+                "taint key prefix must be 1..={TAINT_PREFIX_MAX_LEN} chars: {key}"
+            ));
+        }
+        if !is_dns_subdomain(prefix) {
+            return Err(format!("taint key prefix is not a DNS subdomain: {key}"));
+        }
+    }
+    if name.is_empty() || name.len() > TAINT_NAME_MAX_LEN {
+        return Err(format!(
+            "taint key name portion must be 1..={TAINT_NAME_MAX_LEN} chars: {key}"
+        ));
+    }
+    if !is_qualified_name(name) {
+        return Err(format!(
+            "taint key does not match qualified-name pattern: {key}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_taint_value(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    if value.len() > TAINT_NAME_MAX_LEN {
+        return Err(format!(
+            "taint value must be 0..={TAINT_NAME_MAX_LEN} chars: {value}"
+        ));
+    }
+    if !is_qualified_name(value) {
+        return Err(format!(
+            "taint value does not match qualified-name pattern: {value}"
+        ));
+    }
+    Ok(())
+}
+
+/// `[a-z0-9A-Z]([-a-zA-Z0-9.]*[a-zA-Z0-9])?`
+fn is_qualified_name(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    if !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+    if bytes.len() == 1 {
+        return true;
+    }
+    if !bytes[bytes.len() - 1].is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes[1..bytes.len() - 1]
+        .iter()
+        .all(|&b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+}
+
+fn is_dns_subdomain(s: &str) -> bool {
+    if s.is_empty() || s.len() > TAINT_PREFIX_MAX_LEN {
+        return false;
+    }
+    s.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= TAINT_NAME_MAX_LEN
+            && label
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .as_bytes()
+                .iter()
+                .all(|&b| b.is_ascii_alphanumeric() || b == b'-')
+    })
 }
 
 #[cfg(test)]
