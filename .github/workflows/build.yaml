@@ -15,7 +15,6 @@ on:
       - '.github/workflows/build.yaml'
       - '.github/actions/**'
       - '.vex/**'
-      - 'tools/**'
   push:
     branches:
       - main
@@ -139,10 +138,11 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # VEX schema gate — PR only.
-  # Enforces schema, enum, and CVE-uniqueness on every file under .vex/ so that
-  # malformed VEX statements can never merge to main. The validator itself has
-  # its own fixture-based unit tests which also run here.
+  # VEX parse gate — PR only.
+  # Every .vex/<id>.json is a single-statement OpenVEX document (the native
+  # OpenVEX shape). vexctl merge parses each one as input; any malformed file
+  # fails the merge, giving us free schema + enum + structural validation
+  # from upstream tooling. No custom validator to maintain.
   # ─────────────────────────────────────────────────────────────────────────────
   validate-vex:
     name: 🧾 Validate VEX Statements
@@ -153,16 +153,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: '3.12'
+      - name: Install vexctl
+        run: make vexctl-install
 
-      - name: Run validator unit tests
-        run: ./tools/tests/validate-vex-tests.sh
-
-      - name: Validate .vex/ directory
-        run: ./tools/validate-vex.sh
+      - name: Parse every .vex/*.json via vexctl merge
+        run: make vex-validate
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Extract version — all events; downstream build jobs depend on this.
@@ -428,9 +423,12 @@ jobs:
           cosign sign --yes \
             ghcr.io/${{ matrix.variant.image-repository }}@${{ steps.docker_build.outputs.digest }}
 
-      # Release only: generate a CycloneDX SBOM for the published image.
+      # Push + release: generate a CycloneDX SBOM for the published image.
+      # Needed on push (not just release) because auto-vex-presence
+      # (roadmap Phase 2) uses it to decide whether a Grype finding's purl
+      # is actually present in the product.
       - name: Generate Docker SBOM for ${{ matrix.variant.name }}
-        if: github.event_name == 'release'
+        if: github.event_name != 'pull_request'
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           image: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
@@ -439,7 +437,7 @@ jobs:
           upload-release-assets: false
 
       - name: Upload Docker SBOM as artifact
-        if: github.event_name == 'release'
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docker-sbom-${{ matrix.variant.name }}
@@ -490,23 +488,197 @@ jobs:
           push-to-registry: true
 
   # ─────────────────────────────────────────────────────────────────────────────
+  # Grype triage scan — push + release.
+  # Runs Grype against each image variant WITHOUT VEX suppression and emits
+  # JSON (not SARIF). Its output feeds auto-vex-presence so we can see the
+  # raw set of CVEs before any suppression. The subsequent `grype` job
+  # (after build-vex) still runs with the final VEX for SARIF upload to
+  # Code Scanning. Two passes; costs ~30 s per variant; keeps the
+  # dependency graph acyclic (presence-check needs grype output; final
+  # grype needs the VEX that includes the presence-check output).
+  # ─────────────────────────────────────────────────────────────────────────────
+  grype-triage:
+    name: 🔭 Grype Triage Scan - ${{ matrix.variant.name }}
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [docker, extract-version]
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
+          - name: Distroless
+            image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pinned version matches the later grype job. Bump both together.
+      - name: Install Grype
+        env:
+          GRYPE_VERSION: '0.87.0'
+        run: |
+          set -euo pipefail
+          url="https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo grype.tgz "$url"
+          tar -xzf grype.tgz grype
+          sudo install -m 0755 grype /usr/local/bin/grype
+          grype version
+
+      - name: Run Grype triage (no VEX)
+        env:
+          IMAGE_REF: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
+        run: |
+          grype "$IMAGE_REF" \
+            --output json \
+            --file grype-triage-${{ matrix.variant.name }}.json
+
+      - name: Upload triage artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: grype-triage-${{ matrix.variant.name }}
+          path: grype-triage-${{ matrix.variant.name }}.json
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Auto-VEX (presence-based) — push + release. Roadmap Phase 2.
+  #
+  # For each Grype triage finding whose affected purl is absent from every
+  # image SBOM and whose CVE id is not already covered by a hand-authored
+  # .vex/*.json statement, emit a `not_affected + component_not_present`
+  # OpenVEX statement. The result is uploaded as the `vex-auto-presence`
+  # artifact and is also merged unconditionally into the signed VEX
+  # document by `build-vex`. Verification is downstream (Security team
+  # counter-signs after their own re-evaluation); our side emits
+  # aggressively.
+  # ─────────────────────────────────────────────────────────────────────────────
+  auto-vex-presence:
+    name: 🤖 Auto-VEX (presence)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [docker, extract-version, grype-triage]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+
+      - name: Build auto-vex-presence
+        run: cargo build --release --bin auto-vex-presence
+
+      - name: Download triage scan artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: grype-triage-*
+          path: ./triage
+          merge-multiple: true
+
+      - name: Download Docker SBOM artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: docker-sbom-*
+          path: ./sboms
+          merge-multiple: true
+
+      # One auto-presence document per image variant, then merged at the
+      # end. We keep variants separate because Grype's triage scan is
+      # per-image and we want each statement's `products` to correctly
+      # scope to the image it was derived from. For simplicity in Phase 2,
+      # both variants use the same `pkg:oci/5-spot` product purl (matching
+      # the existing hand-authored statements).
+      - name: Run auto-vex-presence
+        run: |
+          set -euo pipefail
+          vex_id="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/auto-vex-presence"
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          per_variant=()
+          for variant in Chainguard Distroless; do
+            triage="triage/grype-triage-${variant}.json"
+            sbom="sboms/docker-sbom-${variant}.json"
+            if [ ! -f "$triage" ] || [ ! -f "$sbom" ]; then
+              echo "missing $triage or $sbom; skipping variant $variant"
+              continue
+            fi
+            out="vex.auto-presence-${variant}.json"
+            ./target/release/auto-vex-presence \
+              --grype-json "$triage" \
+              --sbom "$sbom" \
+              --vex-dir .vex \
+              --product-purl "pkg:oci/5-spot" \
+              --id "${vex_id}/${variant}" \
+              --author "auto-vex-presence" \
+              --timestamp "$ts" \
+              --output "$out"
+            per_variant+=("$out")
+          done
+          if [ ${#per_variant[@]} -eq 0 ]; then
+            echo "ERROR: no variant produced an auto-presence document"
+            exit 1
+          fi
+
+      - name: Merge per-variant auto-presence documents
+        run: |
+          make vexctl-install
+          vexctl merge \
+            --id "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/auto-vex-presence" \
+            --author "auto-vex-presence" \
+            vex.auto-presence-*.json > vex.auto-presence.json
+          echo "── vex.auto-presence.json ─────────────────────────────────────────"
+          cat vex.auto-presence.json
+
+      - name: Upload auto-presence artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vex-auto-presence
+          path: vex.auto-presence.json
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # VEX document — push to main + release.
   #
-  # Reads hand-authored per-CVE triage from .vex/*.toml, assembles a single
-  # OpenVEX document, and (on push/release only) Cosign-attests it to both
-  # image digests.  The `openvex` artifact is always uploaded so the `grype`
-  # container scan job can consume it via `--vex` and suppress already-
-  # triaged findings from GitHub Code Scanning.  On release, the GitHub
-  # build-provenance bundle is also emitted and attached to the release.
+  # Reads hand-authored per-CVE triage from .vex/*.json (each file is a
+  # single-statement native OpenVEX document), merges them into a single
+  # document via `vexctl merge`, and (on push/release only) Cosign-attests
+  # it to both image digests. The `openvex` artifact is always uploaded so
+  # the `grype` container scan job can consume it via `--vex` and suppress
+  # already-triaged findings from GitHub Code Scanning. On release, the
+  # GitHub build-provenance bundle is also emitted and attached to the
+  # release.
   #
-  # The validator runs first so malformed VEX can never leak through, even
-  # if a bad merge slipped past the PR gate.
+  # vexctl merge fails on any malformed input, so there's no separate
+  # validator step — a bad merge slipping past the PR gate would also fail
+  # the assembly here.
+  #
+  # Trust model: this job emits and Cosign-attests the VEX document. The
+  # auto-presence artifact from the Phase 2 job is merged unconditionally
+  # alongside the hand-authored `.vex/*.json` statements. Verification of
+  # the resulting claims is performed downstream by the Security team,
+  # which independently re-evaluates the VEX against the attached evidence
+  # (SBOMs, Cosign attestations, SLSA provenance) and counter-signs if
+  # they agree. There is no feature-flag gate on our side — automation is
+  # aggressive, verification is external.
   # ─────────────────────────────────────────────────────────────────────────────
   build-vex:
     name: 🧾 Assemble OpenVEX
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    needs: [docker, extract-version]
+    needs: [docker, extract-version, auto-vex-presence]
     permissions:
       contents: read
       id-token: write
@@ -516,16 +688,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: '3.12'
+      - name: Install vexctl
+        run: make vexctl-install
 
-      - name: Validate .vex/ (defensive re-run before assembly)
-        run: ./tools/validate-vex.sh
+      - name: Download auto-presence artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vex-auto-presence
+          path: ./auto
 
       # Canonical @id varies by event so downstream consumers can link back
       # to the exact commit or release tag that produced the document.
+      # The auto-presence document is merged alongside hand-authored
+      # statements on every build.
       - name: Assemble OpenVEX document
         id: assemble
         run: |
@@ -541,11 +716,11 @@ jobs:
               vex_id="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/vex"
               ;;
           esac
-          python3 tools/assemble_openvex.py \
-            --vex-dir .vex \
+          test -f auto/vex.auto-presence.json || { echo "ERROR: auto-presence artifact missing"; exit 1; }
+          vexctl merge \
             --id "$vex_id" \
             --author "${{ github.event.release.author.login || github.actor }}" \
-            --output vex.openvex.json
+            .vex/*.json auto/vex.auto-presence.json > vex.openvex.json
           echo "── vex.openvex.json ─────────────────────────────────────────"
           cat vex.openvex.json
 

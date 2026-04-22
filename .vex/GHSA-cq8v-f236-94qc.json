@@ -1,0 +1,26 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/finos/5-spot/.vex/GHSA-cq8v-f236-94qc",
+  "author": "erick.bourgeois@gmail.com",
+  "statements": [
+    {
+      "impact_statement": "Vulnerable rand 0.8.6 is pulled transitively by tungstenite 0.21 for websocket frame masking only. The advisory requires ThreadRng to be invoked from within a custom log::Log implementation during reseed; 5-Spot's tracing-subscriber stack does not call into rand from any logger emit path, so the unsound code is not in the execute path.",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "products": [
+        {
+          "@id": "pkg:oci/5-spot"
+        },
+        {
+          "@id": "pkg:oci/5-spot"
+        }
+      ],
+      "status": "not_affected",
+      "timestamp": "2026-04-19T00:00:00Z",
+      "vulnerability": {
+        "name": "GHSA-cq8v-f236-94qc"
+      }
+    }
+  ],
+  "timestamp": "2026-04-19T00:00:00Z",
+  "version": 1
+}

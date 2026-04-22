@@ -1,0 +1,86 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# CodeQL analysis — explicit language list.
+#
+# Writing this workflow disables GitHub's "default setup" CodeQL config
+# and lets us pin exactly which languages get analyzed. We had to take
+# over the default setup because it auto-detected Python from
+# docs/pyproject.toml (Poetry manifest for MkDocs tooling) and then
+# failed with "CodeQL detected code written in GitHub Actions, Rust
+# and JavaScript/TypeScript, but not any written in Python" once the
+# 5-Spot VEX Python tooling was removed in the Phase 1 cleanup
+# (.claude/CHANGELOG.md 2026-04-22 19:45).
+#
+# Languages analyzed here are exactly the ones with real source files:
+#   - `rust`                — src/**/*.rs (beta in CodeQL; upstream
+#                              aware, stable enough for static
+#                              vulnerability checks on our surface)
+#   - `actions`             — .github/workflows/**/*.yaml
+#   - `javascript-typescript`
+#                            — docs/src/javascripts/mermaid-init.js
+#                              (MkDocs Mermaid integration)
+#
+# We explicitly do NOT list `python`: the pyproject.toml under docs/
+# is a Poetry *manifest* for the MkDocs build, not Python source code,
+# and would cause the analyzer to finalize an empty database.
+
+name: CodeQL
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  schedule:
+    # Weekly full re-scan on Sundays at 07:17 UTC. Offsets the minute
+    # so we don't collide with the hourly cron queue. Keeps the Code
+    # Scanning dashboard fresh when a week passes without code changes.
+    - cron: '17 7 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: 🔍 CodeQL - ${{ matrix.language }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            build-mode: none
+            runner: ubuntu-latest
+          - language: actions
+            build-mode: none
+            runner: ubuntu-latest
+          - language: javascript-typescript
+            build-mode: none
+            runner: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4.35.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # Repo-local config file (paths-ignore, query suites). Keeps
+          # generated / vendored output out of the database.
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4.35.2
+        with:
+          category: "/language:${{ matrix.language }}"

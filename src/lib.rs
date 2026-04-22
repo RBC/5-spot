@@ -5,6 +5,7 @@
 //! Public API surface for the 5-Spot `ScheduledMachine` controller.
 //!
 //! Modules:
+//! - [`auto_vex_presence`] — presence-based auto-VEX generation (CI-only, roadmap Phase 2)
 //! - [`constants`] — all named constants (timing, labels, phases, CAPI API strings)
 //! - [`crd`] — `ScheduledMachine` CRD type definitions (source of truth for YAML generation)
 //! - [`health`] — HTTP health and readiness server
@@ -12,6 +13,7 @@
 //! - [`metrics`] — Prometheus metric definitions and recording helpers
 //! - [`reconcilers`] — reconciliation logic and controller context
 
+pub mod auto_vex_presence;
 pub mod constants;
 pub mod crd;
 pub mod health;

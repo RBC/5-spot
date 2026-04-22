@@ -27,12 +27,22 @@ independently.
 
 On every release of 5-Spot the CI pipeline performs the following steps:
 
-1. **Validate** every file under `.vex/*.toml` (schema, enum values, CVE
-   uniqueness) with `tools/validate-vex.sh`.
-2. **Assemble** a single OpenVEX document (`vex.openvex.json`) with
-   `tools/assemble_openvex.py`, stamped with a canonical
-   `@id = https://github.com/<owner>/<repo>/releases/tag/<tag>/vex`.
-3. **Cross-check** the output with `vexctl validate`.
+1. **Parse** every file under `.vex/*.json` (each is a single-statement
+   native OpenVEX document) via `vexctl merge`. Malformed input fails
+   the merge — there is no separate validator to keep in sync.
+2. **Generate presence-based auto-VEX** (roadmap Phase 2): the
+   `auto-vex-presence` job runs a Grype triage scan on each image
+   variant without VEX suppression, then emits a `not_affected +
+   component_not_present` statement for every finding whose affected
+   package URL is absent from the image SBOM and not already covered
+   by a hand-authored statement. The result is uploaded as the
+   `vex-auto-presence` workflow artifact for review on every build.
+3. **Assemble** a single OpenVEX document (`vex.openvex.json`) with
+   `vexctl merge`, stamped with a canonical
+   `@id = https://github.com/<owner>/<repo>/releases/tag/<tag>/vex`
+   and the release actor as the document-level author. The
+   auto-presence document is included in the merge on every build —
+   there is no feature-flag gate.
 4. **Cosign-attest** the document to *both* image digests (Chainguard
    and Distroless). The attestation lands in the Sigstore transparency
    log and is pushed to the registry alongside the image.
@@ -91,27 +101,40 @@ release (for example, `finos`).
 ## How a 5-Spot maintainer adds a statement
 
 When a new CVE surfaces on a release artifact, open a PR adding a
-single file to [`.vex/`](https://github.com/finos/5-spot/tree/main/.vex):
+single file to [`.vex/`](https://github.com/finos/5-spot/tree/main/.vex).
+Each file is a native OpenVEX v0.2.0 single-statement document:
 
-```toml
-# .vex/CVE-2025-12345.toml
-cve = "CVE-2025-12345"
-status = "not_affected"
-justification = "vulnerable_code_not_in_execute_path"
-impact_statement = "5-Spot does not parse untrusted XML; the affected libxml2 code path is never invoked."
-products = [
-    "pkg:oci/5-spot-chainguard",
-    "pkg:oci/5-spot-distroless",
-]
-author = "maintainer@example"
-timestamp = "2026-04-19T00:00:00Z"
+```json
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/finos/5-spot/.vex/CVE-2025-12345",
+  "author": "maintainer@example",
+  "timestamp": "2026-04-19T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {"name": "CVE-2025-12345"},
+      "products": [{"@id": "pkg:oci/5-spot"}],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "5-Spot does not parse untrusted XML; the affected libxml2 code path is never invoked.",
+      "timestamp": "2026-04-19T00:00:00Z"
+    }
+  ]
+}
 ```
 
-The PR gate on `build.yaml` (`validate-vex` job) blocks malformed files
-from merging. The same validator is re-run on release for
+The document-level `@id`, `author`, and `timestamp` fields are replaced
+by CI at release time with a canonical release-tag `@id`, the release
+actor, and the release timestamp. Only the statement contents (inside
+`statements[]`) carry forward into the merged release document.
+
+The PR gate on `build.yaml` (`validate-vex` job) runs `vexctl merge`
+over every `.vex/*.json` file; any malformed file fails the merge and
+blocks the PR. The same tool runs again on release for
 belt-and-suspenders.
 
-### Required fields per status
+### Required fields per status (statement level)
 
 | `status`              | Extra required field | Notes                                                              |
 | --------------------- | -------------------- | ------------------------------------------------------------------ |
@@ -120,21 +143,81 @@ belt-and-suspenders.
 | `under_investigation` | `action_statement`   | Same — give consumers something actionable.                        |
 | `fixed`               | —                    | Just declares the CVE no longer applies to this release.           |
 
-All four statuses additionally require `cve`, `products`, `author`, and
-`timestamp` (RFC-3339 UTC).
+All four statuses additionally require `vulnerability.name`, `products`,
+and `timestamp` (RFC-3339 UTC).
+
+Validate locally with `make vex-validate`.
 
 ---
 
-## Why we did not auto-generate statements from scanner output
+## What we automate, and what stays human
 
 The VEX document is a trust claim, not a compliance artifact. If 5-Spot
 automatically emitted `not_affected` for every Grype finding, the
 document would be worthless the moment Grype missed a true positive.
+That constraint rules out "auto-triage everything" but not all
+automation — specifically, the `component_not_present` justification
+has a purely mechanical definition ("the vulnerable component is not
+in the product"), and the SBOM is the authoritative definition of
+what's in the product.
 
-The `.vex/` directory is therefore **hand-authored and PR-reviewed**.
-Grype findings drive maintainers to write statements; the statements
-themselves are deliberate human decisions. This keeps the audit trail
-honest.
+The split is therefore:
+
+- **Automated** (roadmap Phase 2, active on every build): if Grype
+  flags a CVE on a package whose `purl` is not in any image SBOM, and
+  the CVE isn't already triaged in `.vex/`, the `auto-vex-presence`
+  job emits a `not_affected + component_not_present` statement. The
+  SBOM digest is the evidence backing the claim. The resulting
+  statements are merged unconditionally into the signed VEX document.
+- **Hand-authored** (everything else): `not_affected` with any
+  justification other than `component_not_present`, plus all
+  `affected`, `fixed`, and `under_investigation` statements, stay in
+  `.vex/*.json` and go through PR review. Grype findings drive
+  maintainers to write statements; the statements themselves are
+  deliberate human decisions.
+
+Reachability-based auto-VEX (justification
+`vulnerable_code_not_in_execute_path`) is Phase 3 of the roadmap and
+is not yet in production.
+
+---
+
+## Trust model
+
+5-Spot operates a **two-signature** trust model for VEX:
+
+1. **CI emits and Cosign-attests** the merged VEX document
+   (hand-authored + auto-presence) against both image digests on every
+   push + release. The attestation is keyless via GitHub OIDC and lands
+   in the Sigstore transparency log alongside the SBOM attestations,
+   SLSA provenance, and GitHub build-provenance bundle.
+2. **The Security team independently verifies and counter-signs**. On
+   each release they:
+   - Re-run `vexctl merge` over the committed `.vex/*.json` and the
+     uploaded `vex-auto-presence` artifact, diffing against the signed
+     `vex.openvex.json` attached to the release.
+   - For each auto-generated `component_not_present` statement,
+     re-derive presence by inspecting the signed SBOM attestations
+     (`cosign download attestation --predicate-type cyclonedx.json`).
+   - For each hand-authored statement, review the `impact_statement`
+     against the release source tree at the tagged commit.
+   - Apply their own Cosign attestation to the same image digests if
+     they agree (`cosign attest --type openvex` under the Security
+     team's OIDC identity), adding a second signature to the
+     transparency log.
+
+Downstream consumers can require both attestations via
+`cosign verify-attestation` with two `--certificate-identity-regexp`
+invocations (one matching the CI identity, one matching the Security
+team's). The design keeps the VEX document auditable even when the
+5-Spot team automates its generation aggressively: if the CI emits a
+claim the Security team cannot substantiate, the image ships with
+only one signature on the VEX — which is a discoverable condition for
+any downstream gate.
+
+This is why it is safe for 5-Spot CI to auto-generate
+`component_not_present` statements by default: incorrect suppressions
+are caught at verification time, not at emission time.
 
 ---
 

@@ -1,6 +1,0 @@
-cve = "CVE-2025-0020"
-status = "not_affected"
-justification = "component_not_present"
-products = ["pkg:oci/5-spot-distroless"]
-author = "erick.bourgeois@gmail.com"
-timestamp = "2026-04-19T12:00:00Z"

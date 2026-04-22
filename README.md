@@ -22,6 +22,7 @@ A cloud-native Kubernetes controller for managing time-based machine scheduling 
 ### Security & Compliance
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/finos/5-spot/badge)](https://scorecard.dev/viewer/?uri=github.com/finos/5-spot)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12621/badge)](https://www.bestpractices.dev/projects/12621)
 [![SPDX](https://img.shields.io/badge/SPDX-License--Identifier-blue)](https://spdx.dev/)
 [![Gitleaks](https://img.shields.io/badge/Gitleaks-Secret%20Scanning-blue)](https://github.com/gitleaks/gitleaks)
 [![Semgrep](https://img.shields.io/badge/Semgrep-SAST-1B2F3D?logo=semgrep)](https://semgrep.dev/)

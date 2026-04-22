@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status
+.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status
 
 # CALM (FINOS Common Architecture Language Model) configuration
 CALM_CLI_VERSION ?= 1.37.0
@@ -36,6 +36,7 @@ CONTAINER_TOOL ?= docker
 
 # Security tool versions
 GITLEAKS_VERSION ?= 8.21.2
+VEXCTL_VERSION   ?= 0.4.1
 
 # Kind (local Kubernetes) configuration
 KIND_VERSION ?= 0.24.0
@@ -448,6 +449,84 @@ sbom: ## Generate CycloneDX SBOM (Software Bill of Materials)
 audit: ## Check dependencies for security vulnerabilities (installs cargo-audit if missing)
 	@command -v cargo-audit >/dev/null 2>&1 || { echo "Installing cargo-audit..."; cargo install cargo-audit; }
 	@cargo audit
+
+vexctl-install: ## Install vexctl (brew on macOS, pinned raw binary + sha256 on Linux)
+	@if command -v vexctl >/dev/null 2>&1; then \
+		echo "✓ vexctl already installed: $$(vexctl version 2>&1 | head -1)"; \
+		exit 0; \
+	fi; \
+	echo "Installing vexctl v$(VEXCTL_VERSION)..."; \
+	OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+	ARCH=$$(uname -m); \
+	case "$$ARCH" in \
+		x86_64|amd64) ARCH="amd64" ;; \
+		aarch64|arm64) ARCH="arm64" ;; \
+	esac; \
+	case "$$OS" in \
+		darwin) \
+			if command -v brew >/dev/null 2>&1; then \
+				brew install vexctl; \
+			else \
+				echo "ERROR: Homebrew not found. Install from https://brew.sh or set VEXCTL_VERSION and re-run on a system with brew."; \
+				exit 1; \
+			fi ;; \
+		linux) \
+			BINARY="vexctl-linux-$${ARCH}"; \
+			BASE_URL="https://github.com/openvex/vexctl/releases/download/v$(VEXCTL_VERSION)"; \
+			echo "Downloading $${BINARY}..."; \
+			curl -fsSL -o /tmp/$${BINARY} "$${BASE_URL}/$${BINARY}"; \
+			curl -fsSL -o /tmp/vexctl_checksums.txt "$${BASE_URL}/vexctl_checksums.txt"; \
+			cd /tmp && grep "  $${BINARY}$$" vexctl_checksums.txt > vexctl_checksum_file.txt; \
+			if command -v sha256sum >/dev/null 2>&1; then \
+				sha256sum -c vexctl_checksum_file.txt; \
+			elif command -v shasum >/dev/null 2>&1; then \
+				shasum -a 256 -c vexctl_checksum_file.txt; \
+			else \
+				echo "WARNING: No checksum tool found, skipping verification"; \
+			fi; \
+			sudo install -m 0755 /tmp/$${BINARY} /usr/local/bin/vexctl; \
+			rm -f /tmp/$${BINARY} /tmp/vexctl_checksums.txt /tmp/vexctl_checksum_file.txt ;; \
+		*) \
+			echo "ERROR: Unsupported OS '$$OS'. Install vexctl manually from https://github.com/openvex/vexctl/releases"; \
+			exit 1 ;; \
+	esac; \
+	echo "✓ vexctl installed: $$(vexctl version 2>&1 | head -1)"
+
+vex-validate: vexctl-install ## Parse every .vex/*.json via vexctl merge (validation = successful parse)
+	@echo "Validating .vex/*.json..."
+	@vexctl merge --id "https://5-spot/local/validate" --author "local" .vex/*.json > /dev/null
+	@echo "✓ all .vex/*.json parsed successfully"
+
+vex-assemble: vexctl-install ## Assemble a local OpenVEX document from .vex/*.json (prints to stdout)
+	@vexctl merge \
+		--id "https://5-spot/local/assemble" \
+		--author "$$(git config user.email 2>/dev/null || echo local)" \
+		.vex/*.json
+
+# Inputs for vex-auto-presence. Override on the command line, e.g.
+#   make vex-auto-presence GRYPE_JSON=scan.json SBOM_FILES="a.json b.json"
+GRYPE_JSON   ?= grype.json
+SBOM_FILES   ?= $(wildcard target/release/*.cdx.json docker-sbom-*.json)
+PRODUCT_PURL ?= pkg:oci/5-spot
+
+vex-auto-presence: ## Run auto-vex-presence bin over $(GRYPE_JSON) + $(SBOM_FILES) (Phase 2)
+	@if [ ! -f "$(GRYPE_JSON)" ]; then \
+		echo "ERROR: $(GRYPE_JSON) not found. Override with: make vex-auto-presence GRYPE_JSON=path/to/grype.json"; \
+		exit 1; \
+	fi
+	@if [ -z "$(SBOM_FILES)" ]; then \
+		echo "ERROR: no SBOMs found. Override with: make vex-auto-presence SBOM_FILES='a.json b.json'"; \
+		exit 1; \
+	fi
+	@cargo run --quiet --bin auto-vex-presence -- \
+		--grype-json "$(GRYPE_JSON)" \
+		$(foreach s,$(SBOM_FILES),--sbom "$(s)") \
+		--vex-dir .vex \
+		--product-purl "$(PRODUCT_PURL)" \
+		--id "https://5-spot/local/auto-presence" \
+		--author "auto-vex-presence" \
+		--output vex.auto-presence.json
+	@echo "✓ wrote vex.auto-presence.json"
 
 # ============================================================
 # Kind Cluster (local testing for ScheduledMachine)

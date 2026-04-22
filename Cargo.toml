@@ -20,6 +20,10 @@ path = "src/bin/crdgen.rs"
 name = "crddoc"
 path = "src/bin/crddoc.rs"
 
+[[bin]]
+name = "auto-vex-presence"
+path = "src/bin/auto_vex_presence.rs"
+
 [dependencies]
 kube = { version = "3.1", features = ["runtime", "derive", "client", "ws"] }
 kube-lease-manager = "0.11"

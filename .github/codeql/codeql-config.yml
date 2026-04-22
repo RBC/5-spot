@@ -1,0 +1,22 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# CodeQL config consumed by .github/workflows/codeql.yaml. Keeps
+# generated / vendored output out of the scanning database so the
+# analyzer doesn't waste time on files we don't ship and can't fix.
+
+name: "5-Spot CodeQL Config"
+
+# Exclude generated or third-party content from analysis. We still
+# scan every hand-written source file under src/, .github/, and
+# docs/src/javascripts/.
+paths-ignore:
+  # Rust build output (compiled artifacts, incremental-build state,
+  # Cargo-vendored registry caches).
+  - target/**
+  # MkDocs build output.
+  - docs/site/**
+  # Docs build dependencies — Poetry manifests, not source code.
+  - docs/poetry.lock
+  - docs/pyproject.toml
+  - docs/.python-version

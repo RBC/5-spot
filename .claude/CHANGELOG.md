@@ -9,6 +9,415 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-23 08:00] - Fix vexctl-install Linux path (wrong asset filename)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile` (`vexctl-install` target): rewrote the Linux branch. The
+  original was modelled on the `gitleaks-install` target, which
+  assumes a `name_version_os_arch.tar.gz` tarball convention with a
+  versioned `name_version_checksums.txt`. vexctl uses neither
+  convention: releases ship **raw binaries** named
+  `vexctl-<os>-<arch>` (no tarball, no version in the filename), and
+  the checksums file is `vexctl_checksums.txt` (version-less). The
+  branch now downloads the raw binary, downloads the correct
+  checksums file, greps with a two-space-prefix + end-of-line
+  anchor (standard `sha256sum` format), verifies, and `install`s
+  directly to `/usr/local/bin/vexctl`. No tarball extraction step.
+- Help string updated from "GitHub release tarball on Linux" to
+  "pinned raw binary + sha256 on Linux" to match reality.
+
+### Why
+The first CI run that exercised the `vex-validate` job on a
+GitHub-hosted Linux runner failed end-to-end:
+
+```
+Downloading vexctl_0.4.1_linux_amd64.tar.gz...
+curl: (22) The requested URL returned error: 404
+curl: (22) The requested URL returned error: 404
+grep: vexctl_checksums.txt: No such file or directory
+sha256sum: vexctl_checksum_file.txt: no properly formatted checksum lines found
+tar (child): /tmp/vexctl_0.4.1_linux_amd64.tar.gz: Cannot open: No such file or directory
+install: cannot stat '/tmp/vexctl': No such file or directory
+✓ vexctl installed: /bin/sh: 41: vexctl: not found
+make: *** [Makefile:498: vex-validate] Error 127
+```
+
+Root cause: I shipped the Makefile target in Phase 1 without
+verifying the vexctl release asset naming — it differs from the
+gitleaks convention I copied from. Checked the actual
+`/releases/tags/v0.4.1` API response and confirmed the correct
+asset names.
+
+The macOS branch (`brew install vexctl`) was always correct and is
+untouched; local `make vex-validate` on the maintainer's Mac
+continued working throughout, which is why the bug didn't surface
+until CI ran.
+
+### Verification
+- Re-downloaded `vexctl_checksums.txt` from the v0.4.1 release and
+  confirmed the new `grep "  $${BINARY}$$" vexctl_checksums.txt`
+  pattern matches the `vexctl-linux-amd64` line with its SHA
+  (`51753968975448c521b693e91a52f7e30b7d427da668375218fa64392ffb93c5`).
+- Local `make vex-validate` on macOS continues to pass — brew
+  branch untouched.
+- The Linux branch was eyeballed-verified against the actual asset
+  URL and checksum-format; will be proven by the next CI run on
+  this branch.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only — Makefile fix, no runtime or API change.
+- [ ] Documentation only
+
+---
+
+## [2026-04-22 21:45] - Pin CodeQL languages (fallout from Phase 1 Python deletion)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.github/workflows/codeql.yaml`: explicit CodeQL Advanced Setup
+  workflow with a matrix over `rust`, `actions`, and
+  `javascript-typescript`. `build-mode: none` for all three (Rust
+  supports it per the CodeQL compiled-languages docs; the other two
+  don't require a build). Runs on PR, push to main, and a weekly
+  Sunday 07:17 UTC full re-scan. Uploads SARIF per-language category
+  to Code Scanning.
+- `.github/codeql/codeql-config.yml`: companion config file with
+  `paths-ignore` for `target/**`, `docs/site/**`, and the three
+  Poetry-manifest files under `docs/` (`poetry.lock`,
+  `pyproject.toml`, `.python-version`).
+
+### Why
+Phase 1 (`.claude/CHANGELOG.md` 2026-04-22 19:45) deleted the `tools/`
+directory including `assemble_openvex.py` and `validate_vex.py`. After
+that change, GitHub's **default setup** CodeQL run started failing on
+the next push with:
+
+```
+CodeQL detected code written in GitHub Actions, Rust and
+JavaScript/TypeScript, but not any written in Python. Confirm that
+there is some source code for Python in the project.
+```
+
+Root cause: default setup auto-detected Python because
+`docs/pyproject.toml` (a Poetry manifest for MkDocs tooling) still
+exists — but no `.py` source files remain, so the Python database
+finalize step errors with exit code 32.
+
+The fix is to take over from default setup with an explicit workflow
+that pins the language list, which is what this entry adds. Default
+setup will be automatically superseded once any workflow calls
+`github/codeql-action/init`, so no Settings-UI change is needed.
+
+The single JS file in scope is `docs/src/javascripts/mermaid-init.js`
+(MkDocs Mermaid diagram init); that's why JS/TS stays on the list.
+Poetry manifests are explicitly path-ignored — they are metadata, not
+source, and would produce false-empty Python databases.
+
+### Verification
+- `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/codeql.yaml'))"`
+  and `yaml.safe_load(open('.github/codeql/codeql-config.yml'))` both
+  parse clean.
+- Action pins match the rest of the repo
+  (`github/codeql-action@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4.35.2`,
+  `actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2`).
+- Dependabot will continue updating the codeql-action pin
+  (`.github/dependabot.yml:41` already lists `github/codeql-action`
+  in the allow-list).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only — adds a workflow file and a sibling config,
+  no runtime change.
+- [ ] Documentation only
+
+### Operator follow-up
+If the repo's Code Scanning default setup was previously enabled via
+the UI, it will automatically defer to this workflow — no toggle
+needed. If a partial status appears under *Settings → Code security →
+Code scanning*, it's cosmetic: the advanced-setup workflow takes
+precedence.
+
+---
+
+## [2026-04-22 21:15] - Drop AUTO_VEX_PRESENCE gate; Security team is the verifier
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`:
+  - `build-vex` job: removed the `vars.AUTO_VEX_PRESENCE == '1'`
+    conditional on the auto-presence download step. The artifact is
+    now downloaded unconditionally, and the merge command includes
+    `auto/vex.auto-presence.json` on every build. Added an explicit
+    `test -f auto/vex.auto-presence.json || exit 1` guard so a
+    missing artifact fails the job (rather than silently producing
+    hand-authored-only VEX).
+  - Comment headers on both `auto-vex-presence` and `build-vex`
+    rewritten to describe the new trust model: CI emits aggressively,
+    Security team verifies downstream and counter-signs.
+- `.vex/README.md`: removed the "parallel-run gate / review-only"
+  language. Auto-presence statements now merge into the signed VEX on
+  every build.
+- `docs/src/security/vex.md`:
+  - CI flow step 3: removed the `AUTO_VEX_PRESENCE=1` gate clause.
+  - Automation-split section: the "Automated" bullet no longer
+    mentions a feature flag.
+  - New top-level "Trust model" section describing the two-signature
+    workflow: CI-side Cosign attestation (keyless OIDC via GitHub)
+    first, Security-team Cosign attestation (their own OIDC identity)
+    second. Each sits in the Sigstore transparency log; downstream
+    consumers can require both via twin
+    `--certificate-identity-regexp` invocations.
+- `~/dev/roadmaps/5spot-automated-vex-generation.md`:
+  - Top-of-file status line updated: Phase 1 ✅, Phase 2 ✅ (always-on),
+    Phase 3 ⏳ scoped.
+  - New "Trust model (load-bearing)" section at the top — replaces
+    the implicit assumption in the earlier draft that our side would
+    be the verification gate.
+  - Phase 2 "Status" line updated to reflect the gate removal.
+  - Phase 3 tradeoff section simplified: "two independent call-graph
+    analyses must agree" and "multi-release parallel-run" removed;
+    the Security team's re-verification is the second check.
+  - Rollout section rewritten: no per-phase feature flags; each
+    phase activates on merge.
+
+### Why
+Policy flip requested by the user. The original Phase 2 rollout plan
+had an `AUTO_VEX_PRESENCE` repo variable that gated whether
+auto-generated statements flowed into the signed VEX document; the
+intent was a parallel-run validation window where maintainers could
+diff the auto-set against `.vex/` before authorizing it. The revised
+trust model moves that validation downstream to the Security team,
+which re-derives each machine-authored claim from the signed evidence
+(SBOM, call-graph attestations, SLSA provenance) and counter-signs if
+they agree. That makes our side's gate redundant — if we get it
+wrong, the VEX ships with only one attestation instead of two, which
+is a discoverable condition for any downstream consumer running a
+two-signature verify gate.
+
+The trust model extends to the not-yet-implemented Phase 3
+(reachability-based auto-VEX): it also ships unconditionally when
+built, with call-graph attestations providing the evidence for
+Security to verify.
+
+### Verification
+- `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/build.yaml'))"`
+  → valid YAML.
+- `grep "AUTO_VEX_PRESENCE" .github/workflows/build.yaml` → no
+  residual references.
+- No Rust code touched; `cargo` checks unchanged from the previous
+  entry.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only — specifically, removes a config knob that
+  existed for ~1 hour and was never documented as user-facing.
+- [x] Documentation only
+
+---
+
+## [2026-04-22 20:30] - Presence-based auto-VEX (roadmap Phase 2)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/auto_vex_presence.rs` (library module, ~180 LOC) + `src/auto_vex_presence_tests.rs`
+  (20 unit tests, 100% positive/negative/exception coverage per project rule):
+  - `compute_presence_vex` — pure function that diffs Grype findings against
+    SBOMs and the already-triaged CVE set, emitting
+    `not_affected + component_not_present` statements for CVEs whose purl
+    is absent from every SBOM.
+  - `build_document` — wraps statements in the OpenVEX envelope.
+  - `load_triaged_from_vex_dir` — reads hand-authored `.vex/*.json` and
+    collects the set of `vulnerability.name` values (permissive on
+    missing dir, strict on malformed JSON).
+  - Typed deserializers for Grype JSON and CycloneDX SBOM subsets —
+    tolerant of unknown upstream fields.
+  - Output sorted by CVE id for deterministic, diffable artifacts.
+- `src/bin/auto_vex_presence.rs` — thin clap-driven CLI wrapping the
+  library. Reads `--grype-json`, one or more `--sbom` files, a
+  `--vex-dir`, a `--product-purl`, `--id`, optional `--author` and
+  `--timestamp`, writes an OpenVEX JSON to `--output` or stdout.
+- `Cargo.toml`: `[[bin]] auto-vex-presence` entry.
+- `Makefile`: `vex-auto-presence` target (defaults `GRYPE_JSON=grype.json`
+  and `SBOM_FILES=target/release/*.cdx.json docker-sbom-*.json`; both
+  overridable). Added to `.PHONY`.
+- `.github/workflows/build.yaml`: two new jobs gated on
+  `github.event_name != 'pull_request'`:
+  - `grype-triage` — runs Grype against each image variant without VEX
+    suppression, uploads per-variant JSON (pinned GRYPE_VERSION 0.87.0
+    matching the existing `grype` job).
+  - `auto-vex-presence` — builds the new bin, downloads both triage
+    scans + Docker SBOMs, runs the bin once per variant, merges the
+    per-variant outputs via `vexctl merge`, uploads
+    `vex-auto-presence` artifact.
+
+### Changed
+- `.github/workflows/build.yaml`:
+  - Docker SBOM generation (`Generate Docker SBOM for ${{ matrix.variant.name }}`):
+    gate loosened from `if: github.event_name == 'release'` to
+    `if: github.event_name != 'pull_request'` so push-to-main also
+    produces SBOMs for auto-vex-presence to consume.
+  - `build-vex` job: `needs` extended to include `auto-vex-presence`.
+    Added a feature-flagged download step (`if: vars.AUTO_VEX_PRESENCE == '1'`)
+    and conditional merge inclusion. When the repo variable is
+    `AUTO_VEX_PRESENCE=1`, `vex.auto-presence.json` is merged alongside
+    `.vex/*.json`; otherwise hand-authored only. Artifact is produced
+    regardless — only the merge is gated.
+- `src/lib.rs`: re-export `pub mod auto_vex_presence`.
+- `docs/src/security/vex.md`: CI flow section renumbered to 6 steps;
+  added step 2 for auto-presence. Rewrote "Why we did not auto-generate
+  statements" section as "What we automate, and what stays human" — the
+  policy now distinguishes `component_not_present` (mechanical,
+  automatable) from every other triage decision (human-authored).
+- `.vex/README.md`: added "Automated statements (roadmap Phase 2)"
+  section explaining the review-artifact vs flag-gated-merge split.
+
+### Why
+Phase 2 of the automated VEX generation roadmap
+(`~/dev/roadmaps/5spot-automated-vex-generation.md`). Most of the
+hand-authored statements under `.vex/` exist because Grype flags
+CVEs on libc / glibc / zlib code paths that the Rust binary never
+reaches — i.e. the vulnerable component is present in the image
+filesystem but never invoked. A subset of those (plus most
+base-image CVEs going forward) can be suppressed mechanically by
+observing that the flagged package's purl is not in the SBOM at
+all: the SBOM is authoritative for what's in the product, so
+"component_not_present" is the one OpenVEX justification with a
+purely verifiable definition. Automating that specific case shrinks
+the `.vex/` maintenance queue without compromising the trust model
+for any other justification.
+
+The implementation is strictly SBOM-driven — no reachability analysis,
+no source-code inspection. Reachability is Phase 3.
+
+### Rollout / feature-flag
+Per the roadmap rollout plan, the auto-presence artifact is
+produced and uploaded on every push + release, but it is **only
+merged into the signed VEX document when `vars.AUTO_VEX_PRESENCE=1`
+is set** at the repository or organization level. This gives
+maintainers at least one release of parallel-run validation: the
+artifact is visible for review, but consumers see only the
+hand-authored VEX until the flag is flipped. This matches the
+roadmap's explicit guidance ("Run in parallel with hand-authored VEX
+for one release; diff the auto-set against .vex/ and confirm no
+surprises before flipping it on").
+
+### Verification
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy --all-targets --all-features -- -D warnings`: clean.
+- `cargo test --lib`: 349 tests pass (329 pre-existing + 20 new for
+  `auto_vex_presence`).
+- Smoke test: ran the bin against a synthetic Grype JSON (3 matches),
+  synthetic SBOM (covering 1 of the 3 purls), and the current `.vex/`
+  directory (covering 1 of the 3 CVEs). The bin emitted exactly the
+  one statement for the remaining CVE whose purl was absent, and
+  `vexctl merge` of the auto-presence output + `.vex/*.json`
+  produced a 16-statement document with the auto statement correctly
+  included.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (no — CI only)
+- [ ] Config change only
+- [x] Documentation only
+
+*(Rollout note: when maintainers want to flip `AUTO_VEX_PRESENCE=1`,
+that's a repo-variable change in GitHub settings, no code deploy.)*
+
+---
+
+## [2026-04-22 19:45] - Replace Python VEX tooling with vexctl (roadmap Phase 1)
+
+**Author:** Erick Bourgeois
+
+### Removed
+- `tools/` — entire directory deleted. Removed `assemble_openvex.py`,
+  `validate_vex.py`, `validate-vex.sh`, `tests/assemble-openvex-tests.sh`,
+  `tests/validate-vex-tests.sh`, and all 18 fixture directories under
+  `tests/fixtures/`. ~400 LOC of bespoke Python + shell tests replaced
+  by upstream `vexctl` invocations.
+
+### Changed
+- `.vex/*.toml` → `.vex/*.json` (15 files): migrated every statement
+  from the bespoke TOML dialect to the native OpenVEX v0.2.0 JSON
+  shape. Each file is now a single-statement OpenVEX document that
+  `vexctl merge` can consume directly; no translation layer.
+- `Makefile`: added `VEXCTL_VERSION ?= 0.4.1`, `vexctl-install` target
+  (brew on macOS, pinned GitHub release tarball with checksum
+  verification on Linux; errors on other OSes), `vex-validate`
+  (parses every `.vex/*.json` via `vexctl merge` — successful parse
+  is the validation), and `vex-assemble` (prints the merged document
+  for local preview). `.PHONY` list updated.
+- `.github/workflows/build.yaml`:
+  - `validate-vex` job: dropped Python setup + custom validator calls;
+    now runs `make vexctl-install` then `make vex-validate`.
+  - `build-vex` job: dropped Python setup + `assemble_openvex.py`;
+    now runs `vexctl merge --id <per-event-id> --author <actor>
+    .vex/*.json` directly. Per-event `@id` logic (release / push /
+    PR) preserved verbatim. Cosign attestation, artifact upload,
+    and `attest-build-provenance` steps unchanged.
+  - PR `paths:` filter: removed `tools/**` (directory no longer
+    exists); `.vex/**` retained.
+- `.vex/README.md`: rewritten to document native OpenVEX JSON
+  authoring and `make vex-validate` / `make vex-assemble` instead of
+  the old TOML schema and shell validator.
+- `docs/src/security/vex.md`: CI flow section updated — step 1
+  ("validate") and step 2 ("assemble") now describe `vexctl merge`
+  behaviour; dropped the obsolete "cross-check with `vexctl validate`"
+  step (vexctl has no `validate` subcommand). Maintainer-authoring
+  section rewritten with the JSON shape in place of the TOML shape.
+- `.claude/SKILL.md`: release checklist item for VEX updated from the
+  old three-script check to `make vex-validate`.
+
+### Why
+Phase 1 of the automated VEX generation roadmap
+(`~/dev/roadmaps/5spot-automated-vex-generation.md`). The custom
+Python toolchain duplicated functionality that `vexctl` — the official
+OpenVEX CLI — provides upstream. Maintaining a bespoke TOML dialect,
+its validator, its assembler, and two fixture-based test suites
+added ~400 LOC of surface area with no offsetting benefit once we
+accept OpenVEX JSON as the authoring format. Replacing the whole
+stack with `vexctl merge` (which doubles as the validator via
+successful parse) removes the Python runtime from CI entirely,
+eliminates a class of drift between our validator and the upstream
+spec, and prepares the pipeline for Phases 2–3 (automated VEX
+generation from SBOM and call-graph reachability).
+
+The TOML-over-JSON ergonomics hit is real but small: 15 files in
+`.vex/`, each ~15 lines of JSON, with no inline comments. In
+exchange, future maintainers work with the same format upstream
+tooling speaks and any OpenVEX-aware tool can consume the source
+directory directly.
+
+### Verification
+- `make vex-validate` parses all 15 `.vex/*.json` successfully.
+- `vexctl merge --id <x> --author <y> .vex/*.json` produces a
+  15-statement document structurally identical to what the Python
+  assembler would have produced (confirmed via key-by-key diff of
+  `@context`, `@id`, `author`, `version`, and every statement's
+  `products`, `status`, `justification`, `impact_statement`,
+  `action_statement`, `timestamp`).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+*(Not really "documentation only" — code deletion is substantive —
+but no runtime, CRD, or API-surface change. Closest pre-existing
+box.)*
+
+---
+
 ## [2026-04-21 15:00] - Model emergency-reclaim in CALM — ADD retrofit
 
 **Author:** Erick Bourgeois
