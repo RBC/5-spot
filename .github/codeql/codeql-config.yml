@@ -16,7 +16,3 @@ paths-ignore:
   - target/**
   # MkDocs build output.
   - docs/site/**
-  # Docs build dependencies — Poetry manifests, not source code.
-  - docs/poetry.lock
-  - docs/pyproject.toml
-  - docs/.python-version

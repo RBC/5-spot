@@ -87,9 +87,12 @@ until CI ran.
   Sunday 07:17 UTC full re-scan. Uploads SARIF per-language category
   to Code Scanning.
 - `.github/codeql/codeql-config.yml`: companion config file with
-  `paths-ignore` for `target/**`, `docs/site/**`, and the three
-  Poetry-manifest files under `docs/` (`poetry.lock`,
-  `pyproject.toml`, `.python-version`).
+  `paths-ignore` for `target/**` and `docs/site/**` (the generic
+  generated-output exclusions). No Python-adjacent paths — since
+  `python` isn't in the workflow's language matrix, the analyzer
+  never looks at the Poetry manifests in `docs/`, so explicit
+  exclusions there would be dead weight sending a misleading "we
+  still configure for Python" signal.
 
 ### Why
 Phase 1 (`.claude/CHANGELOG.md` 2026-04-22 19:45) deleted the `tools/`
